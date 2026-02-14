@@ -13,8 +13,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
-
-import java.util.Map;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 
 /**
  * Redis auto configuration
@@ -31,8 +30,10 @@ public class RedisAutoConfiguration implements InitializingBean {
 
     private final ApplicationContext applicationContext;
 
+    private final RedisConnectionFactory redisConnectionFactory;
+
     private EventListenerRegistry<?> buildEventListenerRegistry(String beanName, RedisConnectConfig redisConnectConfig) {
-        RedisMqEventListenerRegistry<EventModel<?>> registry = new RedisMqEventListenerRegistry<>(applicationContext, beanName, redisConnectConfig);
+        RedisMqEventListenerRegistry<EventModel<?>> registry = new RedisMqEventListenerRegistry<>(applicationContext, beanName, redisConnectConfig, redisConnectionFactory);
         try {
             registry.init();
         } catch (Exception e) {

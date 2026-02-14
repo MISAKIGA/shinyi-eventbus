@@ -92,7 +92,6 @@ public class EventBusAutoConfiguration implements InitializingBean {
         // 等待时间，默认 60s
         taskExecutor.setAwaitTerminationSeconds(awaitTerminationSeconds);
         taskExecutor.setThreadNamePrefix(threadNamePrefix);
-        taskExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         // 传入一个TaskDecorator的实现，在构造函数中，会将当前线程的Ttl快照复制一份，传入到子线程中
         // 可以考虑是否使用装饰器将线程ThreadLocal上下文获取进去
         //taskExecutor.setTaskDecorator(runnable -> TtlRunnable.get(runnable, true));

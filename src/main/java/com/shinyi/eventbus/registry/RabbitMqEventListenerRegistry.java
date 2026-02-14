@@ -59,12 +59,9 @@ public class RabbitMqEventListenerRegistry<T extends EventModel<?>> implements E
             producerChannel = producerConnection.createChannel();
             producerAsyncChannel = producerConnection.createChannel();
             asyncSender = new AdvancedRabbitMqAsyncSender(producerAsyncChannel);
-            // 声明交换机和队列
-            //producerChannel.exchangeDeclare(rabbitMqConnectConfig.getExchange(), rabbitMqConnectConfig.getExchangeType(), rabbitMqConnectConfig.isDurable());
-            //producerChannel.queueDeclare(rabbitMqConnectConfig.getQueue(), rabbitMqConnectConfig.isDurable(), false, rabbitMqConnectConfig.isAutoDelete(), null);
-            //producerChannel.queueBind(rabbitMqConnectConfig.getQueue(), rabbitMqConnectConfig.getExchange(), rabbitMqConnectConfig.getRoutingKey());
         } catch (Exception e) {
-            log.error("RabbitMQ初始化失败：{}", e.getMessage());
+            log.error("RabbitMQ初始化失败：{}", e.getMessage(), e);
+            throw new EventBusException(EventBusExceptionType.EVENTBUS_DRIVER_ERROR, "RabbitMQ初始化失败: " + e.getMessage(), e);
         }
     }
 

@@ -9,7 +9,6 @@ import com.shinyi.eventbus.serialize.Serializer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationContext;
-import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
@@ -37,6 +36,7 @@ public class RedisMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     protected final ApplicationContext applicationContext;
     protected final String registryBeanName;
     protected final RedisConnectConfig redisConnectConfig;
+    protected final RedisConnectionFactory redisConnectionFactory;
 
     private StringRedisTemplate redisTemplate;
     private RedisMessageListenerContainer container;
@@ -54,11 +54,12 @@ public class RedisMqEventListenerRegistry<T extends EventModel<?>> implements Ev
             throw new IllegalArgumentException("Redis host cannot be empty");
         }
 
-        // Create simple RedisTemplate
-        redisTemplate = new StringRedisTemplate();
+        if (redisConnectionFactory == null) {
+            throw new IllegalStateException("RedisConnectionFactory is required but not provided");
+        }
+
+        redisTemplate = new StringRedisTemplate(redisConnectionFactory);
         
-        // Note: In actual usage, the connection factory should be injected
-        // This is a basic initialization
         log.info("Redis connection initialized for {}:{}", redisConnectConfig.getHost(), redisConnectConfig.getPort());
     }
 

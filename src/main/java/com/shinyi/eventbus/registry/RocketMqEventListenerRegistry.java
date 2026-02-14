@@ -164,7 +164,8 @@ public class RocketMqEventListenerRegistry<T extends EventModel<?>> implements E
         try {
             mqProducer.start();
         } catch (MQClientException e) {
-            log.warn("{} 生产者启动异常：{}", mqProducer.getInstanceName(), e.getMessage(), e);
+            log.error("{} 生产者启动异常：{}", mqProducer.getInstanceName(), e.getMessage(), e);
+            throw new EventBusException(EventBusExceptionType.EVENTBUS_DRIVER_ERROR, "RocketMQ生产者启动失败: " + e.getMessage(), e);
         }
     }
 
