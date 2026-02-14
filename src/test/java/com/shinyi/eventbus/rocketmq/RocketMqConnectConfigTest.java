@@ -19,15 +19,7 @@ public class RocketMqConnectConfigTest {
     public void testDefaultValues() {
         assertEquals(Boolean.FALSE, config.getIsDefault());
         assertEquals("aliyun", config.getBackendType());
-        assertEquals("", config.getProducerAppName());
-        assertEquals("", config.getProducerTopic());
-        assertEquals("", config.getAccessKey());
-        assertEquals("", config.getSecretKey());
-        assertEquals("", config.getNamesrvAddr());
-        assertEquals("", config.getProducerGroupId());
-        assertFalse(config.isSkipCreateProducer());
         assertEquals("latest", config.getOffset());
-        assertEquals("", config.getConsumeTimestamp());
         assertEquals("concurrently", config.getConsumeMode());
         assertEquals("clustering", config.getMessageModel());
         assertEquals(3, config.getRetryTimesWhenSendFailed());

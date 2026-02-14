@@ -24,6 +24,7 @@ A lightweight, annotation-driven event bus framework designed for Spring Boot ap
 | RabbitMQ | Supported | Enterprise message broker |
 | RocketMQ | Supported | Distributed messaging system |
 | Kafka | Supported | Distributed event streaming platform |
+| Redis | Supported | Pub/Sub and Stream messaging |
 
 ## Quick Start
 

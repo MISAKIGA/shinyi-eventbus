@@ -16,9 +16,9 @@ public enum EventBusType {
     GUAVA("guava", true,true),
     SPRING("spring", true,true),
     // ---------------- Remote Event Bus ----------------
-    REDIS("redis", false,false),
-    RABBITMQ("rabbitmq", false,false),
-    KAFKA("kafka", false,false),
+    REDIS("redis", false,true),
+    RABBITMQ("rabbitmq", false,true),
+    KAFKA("kafka", false,true),
     ROCKETMQ("rocketmq", false,true);
 
     private final boolean isLocalEventBus;

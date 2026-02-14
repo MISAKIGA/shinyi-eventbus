@@ -25,6 +25,7 @@
 | RabbitMQ | 已支持 | 企业级消息代理 |
 | RocketMQ | 已支持 | 分布式消息系统 |
 | Kafka | 已支持 | 分布式事件流平台 |
+| Redis | 已支持 | Pub/Sub 和 Stream 消息 |
 
 ## 快速开始
 
