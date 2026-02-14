@@ -1,22 +1,22 @@
-# MQ Integration Guide
+# MQ 集成指南
 
-This guide provides detailed information on how to use each supported Message Queue (MQ) in Shinyi EventBus.
+本指南详细介绍如何在 Shinyi EventBus 中使用各个支持的消息队列（MQ）。
 
-## Supported Message Queues
+## 支持的消息队列
 
-Shinyi EventBus provides built-in support for the following message queues:
+Shinyi EventBus 内置支持以下消息队列：
 
-| Message Queue | Package | Status |
-|---------------|---------|--------|
-| Guava EventBus | com.shinyi.eventbus.registry.GuavaEventListenerRegistry | Built-in |
-| Spring ApplicationEvent | com.shinyi.eventbus.registry.SpringEventListenerRegistry | Built-in |
-| RabbitMQ | com.shinyi.eventbus.config.rabbit | Built-in |
-| RocketMQ | com.shinyi.eventbus.config.rocketmq | Built-in |
-| Kafka | com.shinyi.eventbus.config.kafka | Built-in |
+| 消息队列 | 包名 | 状态 |
+|----------|------|------|
+| Guava EventBus | com.shinyi.eventbus.registry.GuavaEventListenerRegistry | 内置 |
+| Spring ApplicationEvent | com.shinyi.eventbus.registry.SpringEventListenerRegistry | 内置 |
+| RabbitMQ | com.shinyi.eventbus.config.rabbit | 内置 |
+| RocketMQ | com.shinyi.eventbus.config.rocketmq | 内置 |
+| Kafka | com.shinyi.eventbus.config.kafka | 内置 |
 
-## RabbitMQ Integration
+## RabbitMQ 集成
 
-### Configuration
+### 配置
 
 ```yaml
 shinyi:
@@ -30,16 +30,16 @@ shinyi:
           username: guest
           password: guest
           virtual-host: /
-          # Producer settings
+          # 生产者设置
           publisher-confirms: true
           publisher-retry: true
-          # Consumer settings
+          # 消费者设置
           concurrent-consumers: 3
           max-concurrent-consumers: 10
           prefetch-count: 250
 ```
 
-### Usage Example
+### 使用示例
 
 ```java
 @EventBusListener(
@@ -52,13 +52,13 @@ shinyi:
     exchangeType = "topic"
 )
 public void onOrderCreated(EventModel<OrderDTO> event) {
-    // Handle event
+    // 处理事件
 }
 ```
 
-## RocketMQ Integration
+## RocketMQ 集成
 
-### Configuration
+### 配置
 
 ```yaml
 shinyi:
@@ -69,17 +69,17 @@ shinyi:
           is-default: true
           namesrv-addr: localhost:9876
           group-name: my-producer-group
-          # Producer settings
+          # 生产者设置
           send-message-timeout: 3000
           compress-message-body-threshold: 4096
           max-message-size: 4194304
-          # Consumer settings
+          # 消费者设置
           consume-thread-min: 20
           consume-thread-max: 64
           consume-message-batch-max-size: 1
 ```
 
-### Usage Example
+### 使用示例
 
 ```java
 @EventBusListener(
@@ -89,13 +89,13 @@ shinyi:
     tags = "register,notification"
 )
 public void onUserRegistered(EventModel<UserDTO> event) {
-    // Handle event
+    // 处理事件
 }
 ```
 
-## Kafka Integration
+## Kafka 集成
 
-### Configuration
+### 配置
 
 ```yaml
 shinyi:
@@ -108,7 +108,7 @@ shinyi:
           topic: my-topic
           group-id: my-consumer-group
           
-          # Producer settings
+          # 生产者设置
           acks: 1
           retries: 3
           batch-size: 16384
@@ -116,7 +116,7 @@ shinyi:
           buffer-memory: 33554432
           max-in-flight-requests-per-connection: 5
           
-          # Consumer settings
+          # 消费者设置
           auto-offset-reset: earliest
           enable-auto-commit: true
           auto-commit-interval-ms: 5000
@@ -124,13 +124,13 @@ shinyi:
           max-poll-records: 500
           max-poll-interval-ms: 300000
           
-          # Advanced settings
+          # 高级设置
           client-id: my-client-id
           receive-buffer-bytes: 65536
           send-buffer-bytes: 131072
 ```
 
-### Usage Example
+### 使用示例
 
 ```java
 @EventBusListener(
@@ -139,11 +139,11 @@ shinyi:
     group = "login-service"
 )
 public void onUserLogin(EventModel<LoginEvent> event) {
-    System.out.println("Received login event: " + event.getEntity());
+    System.out.println("收到登录事件: " + event.getEntity());
 }
 ```
 
-### Kafka Event Publishing
+### 发布 Kafka 事件
 
 ```java
 @Service
@@ -153,71 +153,71 @@ public class EventPublisher {
     private EventListenerRegistryManager eventRegistryManager;
 
     public void publishLoginEvent(LoginEvent loginEvent) {
-        // Synchronous publish
+        // 同步发布
         eventRegistryManager.publish("kafka", 
             EventModel.build("user.login", loginEvent, false));
         
-        // Asynchronous publish
+        // 异步发布
         eventRegistryManager.publish("kafka", 
             EventModel.build("user.login", loginEvent, true));
     }
 }
 ```
 
-### Serialization Options
+### 序列化选项
 
-Kafka supports multiple serialization types through the `@EventBusListener` annotation:
+Kafka 支持通过 `@EventBusListener` 注解配置多种序列化类型：
 
 ```java
-// Default JSON serialization
+// 默认 JSON 序列化
 @EventBusListener(name = "kafka", topic = "event.json", serializeType = "DEFAULT")
 public void onJsonEvent(EventModel<MyEvent> event) { }
 
-// Raw message (no deserialization)
+// 原始消息（不进行反序列化）
 @EventBusListener(name = "kafka", topic = "event.raw", serializeType = "MSG")
 public void onRawEvent(EventModel<?> event) { 
     byte[] rawData = event.getRawData();
 }
 ```
 
-## Local Event Bus (Guava/Spring)
+## 本地事件总线（Guava/Spring）
 
-### Guava EventBus Configuration
+### Guava EventBus 配置
 
 ```yaml
 shinyi:
   eventbus:
-    # Local event bus uses thread pool configuration
+    # 本地事件总线使用线程池配置
     thread-pool-core-size: 4
     thread-pool-max-size: 8
     max-queue-size: 10000
 ```
 
-### Usage Example
+### 使用示例
 
 ```java
 @EventBusListener(name = "guava", topic = "user.created")
 public void onUserCreated(EventModel<String> event) {
-    System.out.println("Local event: " + event.getEntity());
+    System.out.println("本地事件: " + event.getEntity());
 }
 ```
 
-### Spring ApplicationEvent Usage
+### Spring ApplicationEvent 使用
 
 ```java
 @EventBusListener(name = "spring", topic = "spring.event")
 public void onSpringEvent(EventModel<Object> event) {
-    // Handle Spring application event
+    // 处理 Spring 应用程序事件
 }
 ```
 
-## Extending with Custom MQ Providers
+## 扩展自定义 MQ 提供商
 
-Shinyi EventBus uses a registry-based system, making it easy to add support for other messaging systems.
+Shinyi EventBus 使用基于注册表的系统，可以轻松添加对其他消息系统的支持。
 
-### Step 1: Implement EventListenerRegistry
+### 步骤 1：实现 EventListenerRegistry
 
-Create a new class implementing `EventListenerRegistry<EventModel<?>>`.
+创建实现 `EventListenerRegistry<EventModel<?>>` 的新类。
 
 ```java
 public class CustomMqEventListenerRegistry implements EventListenerRegistry<EventModel<?>> {
@@ -237,22 +237,22 @@ public class CustomMqEventListenerRegistry implements EventListenerRegistry<Even
 
     @Override
     public void initRegistryEventListener(List<EventListener<EventModel<?>>> listeners) {
-        // Initialize consumer based on listeners
+        // 根据监听器初始化消费者
     }
 
     @Override
     public void publish(EventModel<?> event) {
-        // Publish to custom MQ
+        // 发布到自定义 MQ
     }
 
     @Override
     public void close() {
-        // Clean up resources
+        // 清理资源
     }
 }
 ```
 
-### Step 2: Create Configuration Properties
+### 步骤 2：创建配置属性
 
 ```java
 @ConfigurationProperties(prefix = "shinyi.eventbus.custom-mq")
@@ -261,7 +261,7 @@ public class CustomMqConfig {
 }
 ```
 
-### Step 3: Create Auto-Configuration
+### 步骤 3：创建自动配置
 
 ```java
 @Configuration
@@ -272,7 +272,7 @@ public class CustomMqAutoConfiguration {
     private ApplicationContext applicationContext;
 
     public void registerBeanDefinitions() {
-        // Register CustomMqEventListenerRegistry beans
+        // 注册 CustomMqEventListenerRegistry beans
     }
 }
 ```

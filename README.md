@@ -4,16 +4,26 @@
 
 > **[English Documentation](README.md) | [中文文档](README-CN.md)**
 
-A lightweight, annotation-driven event bus framework designed for Spring Boot applications. It provides a unified interface for handling both local events (Guava, Spring ApplicationContext) and distributed events (RabbitMQ, RocketMQ), simplifying event-driven architecture implementation.
+A lightweight, annotation-driven event bus framework designed for Spring Boot applications. It provides a unified interface for handling both local events (Guava, Spring ApplicationContext) and distributed events (RabbitMQ, RocketMQ, Kafka), simplifying event-driven architecture implementation.
 
 ## Features
 
 - **Unified API**: Publish and subscribe to events using the same `@EventBusListener` annotation, regardless of the underlying transport.
 - **Hybrid Support**: Seamlessly switch between local (in-memory) and remote (message queue) event distribution.
-- **Multi-MQ Support**: Built-in support for RabbitMQ and RocketMQ. extensible architecture for other MQs (e.g., Kafka).
+- **Multi-MQ Support**: Built-in support for RabbitMQ, RocketMQ, and Kafka. Extensible architecture for other MQs.
 - **Context Propagation**: Automatic context propagation (e.g., trace IDs) using TransmittableThreadLocal.
 - **Serialization Control**: Flexible serialization options (JSON, Raw String, Byte Array, Native Object).
 - **Async Execution**: Built-in thread pool for asynchronous event processing.
+
+## Supported Message Queues
+
+| Message Queue | Status | Description |
+|---------------|--------|-------------|
+| Guava EventBus | Supported | Local in-memory event bus |
+| Spring ApplicationEvent | Supported | Spring framework built-in events |
+| RabbitMQ | Supported | Enterprise message broker |
+| RocketMQ | Supported | Distributed messaging system |
+| Kafka | Supported | Distributed event streaming platform |
 
 ## Quick Start
 
@@ -23,7 +33,7 @@ Build the project and add it to your Spring Boot application's `pom.xml`:
 
 ```xml
 <dependency>
-    <groupId>com.shinyi</groupId>
+    <groupId>io.github.misakiga</groupId>
     <artifactId>shinyi-eventbus</artifactId>
     <version>1.0.0</version>
 </dependency>
@@ -77,6 +87,15 @@ shinyi:
           is-default: true
           namesrv-addr: localhost:9876
           group-name: my-producer-group
+
+    # Kafka Configuration (Optional)
+    kafka:
+      connect-configs:
+        default-kafka:
+          is-default: true
+          bootstrap-servers: localhost:9092
+          topic: my-topic
+          group-id: my-consumer-group
 ```
 
 ### 4. Publishing Events
@@ -101,6 +120,9 @@ public class EventPublisher {
 
         // Publish to RabbitMQ (using default 'rabbitmq' name if is-default=true)
         eventRegistryManager.publish("rabbitmq", EventModel.build("order.created", new OrderDTO()));
+
+        // Publish to Kafka
+        eventRegistryManager.publish("kafka", EventModel.build("user.login", new LoginEvent()));
     }
 }
 ```
@@ -142,7 +164,63 @@ public class EventListener {
     public void onOrderCreated(EventModel<OrderDTO> event) {
         System.out.println("Received order event: " + event.getEntity());
     }
+
+    /**
+     * Listen to Kafka events
+     */
+    @EventBusListener(
+        name = "kafka", 
+        topic = "user.login",
+        group = "login-service"
+    )
+    public void onUserLogin(EventModel<LoginEvent> event) {
+        System.out.println("Received login event: " + event.getEntity());
+    }
 }
+```
+
+## Kafka Configuration Reference
+
+The following configuration properties are available for Kafka:
+
+```yaml
+shinyi:
+  eventbus:
+    kafka:
+      connect-configs:
+        my-kafka:
+          # Whether this is the default Kafka connection
+          is-default: true
+          
+          # Kafka bootstrap servers (required)
+          bootstrap-servers: localhost:9092
+          
+          # Default topic for this connection
+          topic: my-topic
+          
+          # Consumer group ID
+          group-id: my-consumer-group
+          
+          # Client ID
+          client-id: my-client
+          
+          # Producer settings
+          acks: 1
+          retries: 3
+          batch-size: 16384
+          linger-ms: 1
+          buffer-memory: 33554432
+          
+          # Consumer settings
+          auto-offset-reset: earliest
+          enable-auto-commit: true
+          auto-commit-interval-ms: 5000
+          session-timeout-ms: 30000
+          max-poll-records: 500
+          
+          # Serialization (ByteArray serializer is used by default)
+          key-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+          value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
 ```
 
 ## Documentation
