@@ -4,6 +4,7 @@ import com.shinyi.eventbus.config.kafka.KafkaConnectConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -31,7 +32,8 @@ public class KafkaConsumerTest {
         assertEquals("localhost:9092", props.get("bootstrap.servers"));
         assertEquals("test-group", props.get("group.id"));
         assertEquals("test-client", props.get("client.id"));
-        assertEquals(ByteArrayDeserializer.class.getName(), props.get("key.deserializer"));
+        // Key uses StringDeserializer because KafkaMqEventListenerRegistry uses String keys
+        assertEquals(StringDeserializer.class.getName(), props.get("key.deserializer"));
         assertEquals(ByteArrayDeserializer.class.getName(), props.get("value.deserializer"));
     }
 
@@ -39,7 +41,8 @@ public class KafkaConsumerTest {
     public void testDefaultDeserializerValues_shouldBeByteArray() {
         KafkaConnectConfig defaultConfig = new KafkaConnectConfig();
 
-        assertEquals("org.apache.kafka.common.serialization.ByteArrayDeserializer", defaultConfig.getKeyDeserializer());
+        // Key uses StringDeserializer because KafkaMqEventListenerRegistry uses String keys
+        assertEquals("org.apache.kafka.common.serialization.StringDeserializer", defaultConfig.getKeyDeserializer());
         assertEquals("org.apache.kafka.common.serialization.ByteArrayDeserializer", defaultConfig.getValueDeserializer());
     }
 
@@ -47,8 +50,9 @@ public class KafkaConsumerTest {
     public void testConsumerCreation_withValidConfig() {
         Properties props = config.toConsumerProperties();
         props.setProperty("auto.offset.reset", "earliest");
-        
-        try (KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(props)) {
+
+        // Consumer uses String key and byte[] value
+        try (KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(props)) {
             assertNotNull(consumer);
         }
     }

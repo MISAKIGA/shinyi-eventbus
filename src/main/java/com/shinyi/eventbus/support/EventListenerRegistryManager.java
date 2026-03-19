@@ -59,6 +59,9 @@ public class EventListenerRegistryManager implements SmartLifecycle, Application
 
     public void publish(String eventBusTypeName, EventModel<?> event) throws EventBusException {
         if(null == event) { throw new EventBusException(EventBusExceptionType.EVENTBUS_PUBLISH_EVENT_NULL_ERROR, "事件模型不能为空"); }
+
+        // 耗时统计 - traceId获取
+        long traceIdStart = System.nanoTime();
         if(null == event.getEventId()) {
             String traceId = MDC.get("traceId");
             if(StrUtil.isBlank(traceId)) {
@@ -66,15 +69,27 @@ public class EventListenerRegistryManager implements SmartLifecycle, Application
             }
             event.setEventId(traceId);
         }
-        final long start = System.currentTimeMillis();
-        try {
-            EventListenerRegistry<EventModel<?>> eventModelEventListenerRegistry = ALL_EVENT_DRIVE_REGISTRY.get(eventBusTypeName);
-            if(eventModelEventListenerRegistry == null) {
-                throw new EventBusException(EventBusExceptionType.EVENTBUS_DRIVER_NOT_FOUND_ERROR, MapUtil.of("EL", eventBusTypeName));
-            }
-            event.setDriveType(eventBusTypeName+"#"+eventModelEventListenerRegistry.getEventBusType().getTypeName());
-            String syncDescribe = event.isEnableAsync() ? "异步" : "同步";
+        com.shinyi.eventbus.monitor.PerformanceMonitor.record("traceId.getOrCreate", System.nanoTime() - traceIdStart);
+
+        // 耗时统计 - registry查找
+        long registryLookupStart = System.nanoTime();
+        EventListenerRegistry<EventModel<?>> eventModelEventListenerRegistry = ALL_EVENT_DRIVE_REGISTRY.get(eventBusTypeName);
+        if(eventModelEventListenerRegistry == null) {
+            throw new EventBusException(EventBusExceptionType.EVENTBUS_DRIVER_NOT_FOUND_ERROR, MapUtil.of("EL", eventBusTypeName));
+        }
+        event.setDriveType(eventBusTypeName+"#"+eventModelEventListenerRegistry.getEventBusType().getTypeName());
+        com.shinyi.eventbus.monitor.PerformanceMonitor.record("registry.lookup", System.nanoTime() - registryLookupStart);
+
+        // 耗时统计 - 实际发布
+        long publishStart = System.nanoTime();
+        String syncDescribe = event.isEnableAsync() ? "异步" : "同步";
+
+        // 只有非性能模式才打印详细日志
+        if (!com.shinyi.eventbus.monitor.PerformanceMonitor.isEnabled()) {
             log.info("{} 开始发布 {} {} 事件：{}", event.getTopic(), eventBusTypeName, syncDescribe, event.getEventId());
+        }
+
+        try {
             eventModelEventListenerRegistry.publish(event);
         } catch (Exception e) {
             if(event.isEnableAsync()) {
@@ -84,7 +99,10 @@ public class EventListenerRegistryManager implements SmartLifecycle, Application
                 throw new EventBusException(EventBusExceptionType.LISTENER_BIZ_ERROR, MapUtil.of("ERR", e.getMessage()), e);
             }
         } finally {
-            log.info("{} 事件发布 {} 耗时：{}", eventBusTypeName, event.getTopic(), System.currentTimeMillis() - start);
+            com.shinyi.eventbus.monitor.PerformanceMonitor.record("registry.publish", System.nanoTime() - publishStart);
+            if (!com.shinyi.eventbus.monitor.PerformanceMonitor.isEnabled()) {
+                log.info("{} 事件发布 {} 耗时：{}", eventBusTypeName, event.getTopic(), System.currentTimeMillis() - publishStart);
+            }
         }
     }
 
