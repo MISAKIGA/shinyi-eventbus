@@ -32,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -57,7 +58,7 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
      */
     private static class OffsetCommitState {
         Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new ConcurrentHashMap<>();
-        int processedCount = 0;
+        AtomicInteger processedCount = new AtomicInteger(0);
     }
 
     @Override
@@ -184,10 +185,10 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
 
         TopicPartition tp = new TopicPartition(record.topic(), record.partition());
         state.pendingOffsets.put(tp, new OffsetAndMetadata(record.offset() + 1));
-        state.processedCount++;
+        state.processedCount.incrementAndGet();
 
         // Use processedCount (number of messages) not pendingOffsets.size() (number of partitions)
-        if (state.processedCount >= batchSize) {
+        if (state.processedCount.get() >= batchSize) {
             commitPendingOffsets(consumer);
         }
     }
@@ -210,7 +211,7 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                 consumer.commitSync(new HashMap<>(state.pendingOffsets));
                 log.debug("EOS: Committed offsets for {} partitions", state.pendingOffsets.size());
                 state.pendingOffsets.clear();
-                state.processedCount = 0;
+                state.processedCount.set(0);
             } catch (Exception e) {
                 log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
             }

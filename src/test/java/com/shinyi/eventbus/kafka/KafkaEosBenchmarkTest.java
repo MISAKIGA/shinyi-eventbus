@@ -205,7 +205,7 @@ public class KafkaEosBenchmarkTest {
 
         BenchmarkResult result = runEosConsumerBenchmark(
                 "EOS Consumer Baseline",
-                createEosConsumerConfig(100),
+                createEosConsumerConfig(prefillTopic, 100),
                 MESSAGE_COUNT,
                 100
         );
@@ -257,7 +257,7 @@ public class KafkaEosBenchmarkTest {
 
             BenchmarkResult result = runEosConsumerBenchmark(
                     "EOS Consumer (batch=" + batchSize + ")",
-                    createEosConsumerConfig(batchSize),
+                    createEosConsumerConfig(testTopic, batchSize),
                     MESSAGE_COUNT,
                     batchSize
             );
@@ -358,10 +358,11 @@ public class KafkaEosBenchmarkTest {
         return config;
     }
 
-    private KafkaConnectConfig createEosConsumerConfig(int commitBatchSize) {
+    private KafkaConnectConfig createEosConsumerConfig(String topic, int commitBatchSize) {
         KafkaConnectConfig config = new KafkaConnectConfig();
         config.setBootstrapServers(bootstrapServers);
-        config.setTopic(TOPIC);
+        config.setTopic(topic);
+        config.setGroupId("eos-benchmark-group");
         // EOS consumer settings
         config.setEnableAutoCommit(false);
         config.setEnableManualCommit(true);
@@ -537,8 +538,7 @@ public class KafkaEosBenchmarkTest {
         KafkaProducer<String, byte[]> producer = new KafkaProducer<>(producerProps);
 
         // Setup consumer
-        KafkaConnectConfig consumerConfig = createEosConsumerConfig(commitBatchSize);
-        consumerConfig.setTopic(topic);
+        KafkaConnectConfig consumerConfig = createEosConsumerConfig(topic, commitBatchSize);
         Properties consumerProps = consumerConfig.toConsumerProperties(true);
         KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
         consumer.subscribe(Collections.singletonList(topic));
@@ -611,8 +611,7 @@ public class KafkaEosBenchmarkTest {
         Thread.sleep(1000);
 
         // Consume from all partitions
-        KafkaConnectConfig consumerConfig = createEosConsumerConfig(commitBatchSize);
-        consumerConfig.setTopic(topic);
+        KafkaConnectConfig consumerConfig = createEosConsumerConfig(topic, commitBatchSize);
         Properties consumerProps = consumerConfig.toConsumerProperties(true);
         KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
         consumer.subscribe(Collections.singletonList(topic));
