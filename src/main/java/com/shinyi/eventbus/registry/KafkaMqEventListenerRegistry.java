@@ -15,10 +15,12 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
 import org.springframework.context.ApplicationContext;
 
@@ -26,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -45,6 +48,17 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     private final Set<ExecutorService> executorSet = new ConcurrentHashSet<>();
     protected final Serializer serializer = new BaseSerializer();
     private final AtomicBoolean started = new AtomicBoolean(false);
+
+    // EOS: Offset tracking for manual commit
+    private final Map<KafkaConsumer<String, byte[]>, OffsetCommitState> offsetStates = new ConcurrentHashMap<>();
+
+    /**
+     * EOS: Offset tracking state per consumer
+     */
+    private static class OffsetCommitState {
+        Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new ConcurrentHashMap<>();
+        int processedCount = 0;
+    }
 
     @Override
     public EventBusType getEventBusType() {
@@ -95,6 +109,10 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
         ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, "kafka-consumer-" + finalTopic));
         executorSet.add(executor);
 
+        // EOS: Get EOS settings from listener
+        final boolean eosEnabled = listener.exactlyOnce();
+        final int commitBatchSize = listener.commitBatchSize();
+
         final com.shinyi.eventbus.EventListener<T> finalListener = listener;
         executor.submit(() -> {
             try {
@@ -109,6 +127,10 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                                 }
                                 EventModel<?> eventModel = deserialize(record.value(), record.offset() + "", finalListener);
                                 finalListener.onMessage((T) eventModel);
+                                // EOS: Track offset for manual commit after successful processing
+                                if (eosEnabled) {
+                                    trackOffsetAndCommit(consumer, record, commitBatchSize);
+                                }
                             } catch (Exception e) {
                                 log.warn("Message processing failed: " + e.getMessage(), e);
                             }
@@ -118,6 +140,10 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                     }
                 }
             } finally {
+                // EOS: Commit pending offsets before shutdown
+                if (eosEnabled) {
+                    commitPendingOffsets(consumer);
+                }
                 consumer.close();
             }
         });
@@ -146,6 +172,40 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
             eventModel.setTopic(listener.topic());
         }
         return eventModel;
+    }
+
+    /**
+     * EOS: Track offset and commit when batch size reached
+     */
+    private void trackOffsetAndCommit(KafkaConsumer<String, byte[]> consumer,
+                                     ConsumerRecord<String, byte[]> record,
+                                     int batchSize) {
+        OffsetCommitState state = offsetStates.computeIfAbsent(consumer, k -> new OffsetCommitState());
+
+        TopicPartition tp = new TopicPartition(record.topic(), record.partition());
+        state.pendingOffsets.put(tp, new OffsetAndMetadata(record.offset() + 1));
+        state.processedCount++;
+
+        if (state.pendingOffsets.size() >= batchSize) {
+            commitPendingOffsets(consumer);
+        }
+    }
+
+    /**
+     * EOS: Commit pending offsets to Kafka
+     */
+    private void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer) {
+        OffsetCommitState state = offsetStates.get(consumer);
+        if (state != null && !state.pendingOffsets.isEmpty()) {
+            try {
+                consumer.commitSync(new HashMap<>(state.pendingOffsets));
+                log.debug("EOS: Committed offsets for {} partitions", state.pendingOffsets.size());
+                state.pendingOffsets.clear();
+                state.processedCount = 0;
+            } catch (Exception e) {
+                log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
+            }
+        }
     }
 
     @Override
@@ -278,6 +338,11 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
 
     @Override
     public void close() throws Exception {
+        // EOS: Commit pending offsets for all consumers before shutdown
+        for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
+            commitPendingOffsets(consumer);
+        }
+
         for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
             try {
                 consumer.wakeup();

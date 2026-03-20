@@ -100,5 +100,19 @@ public interface EventListener<T> extends java.util.EventListener {
      */
     default boolean autoDelete() { return false; }
 
+    // -------------- EOS (Exactly-Once Semantics)
+
+    /**
+     * 启用 Exactly-Once Semantics (EOS) 语义。
+     * 当为 true 时，启用幂等生产者和手动 offset 提交。
+     */
+    default boolean exactlyOnce() { return false; }
+
+    /**
+     * 处理多少条消息后提交一次 offset。
+     * 仅在 exactlyOnce() 为 true 时使用。
+     */
+    default int commitBatchSize() { return 100; }
+
 
 }

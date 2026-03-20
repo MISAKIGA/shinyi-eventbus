@@ -175,9 +175,67 @@ public void onJsonEvent(EventModel<MyEvent> event) { }
 
 // 原始消息（不进行反序列化）
 @EventBusListener(name = "kafka", topic = "event.raw", serializeType = "MSG")
-public void onRawEvent(EventModel<?> event) { 
+public void onRawEvent(EventModel<?> event) {
     byte[] rawData = event.getRawData();
 }
+```
+
+### Kafka Kerberos (GSSAPI) 认证
+
+Shinyi EventBus 支持通过 GSSAPI SASL 机制进行 Kerberos 认证。
+
+```yaml
+shinyi:
+  eventbus:
+    kafka:
+      connect-configs:
+        kerberos-kafka:
+          is-default: true
+          bootstrap-servers: kafka.example.com:9092
+          topic: my-topic
+          group-id: my-consumer-group
+
+          # Kerberos 安全设置
+          security-protocol: SASL_SSL
+          sasl-mechanism: GSSAPI
+
+          # Kerberos 认证
+          kerberos-service-name: kafka
+          kerberos-principal: kafka/kafka.example.com@EXAMPLE.COM
+          kerberos-keytab: /etc/kafka/kafka.keytab
+          kerberos-krb5-location: /etc/kafka/krb5.conf
+```
+
+#### 配置参数说明
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| security-protocol | String | PLAINTEXT | 安全协议 (PLAINTEXT, SASL_PLAINTEXT, SASL_SSL) |
+| sasl-mechanism | String | PLAIN | SASL 机制 (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, GSSAPI) |
+| kerberos-service-name | String | kafka | Kerberos 服务名称 |
+| kerberos-principal | String | - | Kerberos 主体 (如 kafka/kafka.example.com@EXAMPLE.COM) |
+| kerberos-keytab | String | - | Kerberos keytab 文件路径 |
+| kerberos-krb5-location | String | - | krb5.conf 文件路径 |
+
+#### krb5.conf 配置示例
+
+```ini
+[libdefaults]
+    default_realm = EXAMPLE.COM
+    dns_lookup_realm = false
+    dns_lookup_kdc = false
+    ticket_lifetime = 24h
+    renew_until = 7d
+
+[realms]
+    EXAMPLE.COM = {
+        kdc = kdc.example.com
+        admin_server = kdc.example.com
+    }
+
+[domain_realm]
+    .example.com = EXAMPLE.COM
+    example.com = EXAMPLE.COM
 ```
 
 ## 本地事件总线（Guava/Spring）

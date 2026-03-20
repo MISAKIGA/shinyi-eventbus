@@ -101,4 +101,24 @@ public @interface EventBusListener {
      * Rabbit 消费消息后是否删除
      */
     boolean autoDelete() default false;
+
+    // --------------- EOS (Exactly-Once Semantics)
+
+    /**
+     * 启用 Exactly-Once Semantics (EOS) 语义。
+     * 启用后:
+     * - Producer 使用幂等生产者 (enable.idempotence=true)
+     * - Consumer 使用手动提交 offset (enable.auto.commit=false)
+     *
+     * Default: false (向后兼容)
+     */
+    boolean exactlyOnce() default false;
+
+    /**
+     * 手动提交 offset 的批量大小。
+     * 处理完这么多消息后提交一次 offset。
+     * 值越大吞吐量越高，但失败时重复风险也越高。
+     * Default: 100
+     */
+    int commitBatchSize() default 100;
 }
