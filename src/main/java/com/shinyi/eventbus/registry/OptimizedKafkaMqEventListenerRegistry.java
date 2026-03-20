@@ -235,9 +235,9 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                     }
                 }
             } finally {
-                // EOS: Commit pending offsets before shutdown
+                // EOS: Commit pending offsets before shutdown and cleanup
                 if (eosEnabled) {
-                    commitPendingOffsets(consumer);
+                    commitPendingOffsets(consumer, true);  // true = remove after commit
                 }
                 consumer.close();
             }
@@ -285,7 +285,8 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         state.pendingOffsets.put(tp, new OffsetAndMetadata(record.offset() + 1));
         state.processedCount++;
 
-        if (state.pendingOffsets.size() >= batchSize) {
+        // Use processedCount (number of messages) not pendingOffsets.size() (number of partitions)
+        if (state.processedCount >= batchSize) {
             commitPendingOffsets(consumer);
         }
     }
@@ -294,6 +295,14 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
      * EOS: Commit pending offsets to Kafka
      */
     private void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer) {
+        commitPendingOffsets(consumer, false);
+    }
+
+    /**
+     * EOS: Commit pending offsets to Kafka
+     * @param removeAfterCommit if true, remove the consumer entry from offsetStates after committing
+     */
+    private void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer, boolean removeAfterCommit) {
         OffsetCommitState state = offsetStates.get(consumer);
         if (state != null && !state.pendingOffsets.isEmpty()) {
             try {
@@ -308,6 +317,9 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                     log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
                 }
             }
+        }
+        if (removeAfterCommit) {
+            offsetStates.remove(consumer);
         }
     }
 
@@ -455,9 +467,9 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
 
     @Override
     public void close() throws Exception {
-        // EOS: Commit pending offsets for all consumers before shutdown
+        // EOS: Commit pending offsets for all consumers before shutdown and cleanup
         for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
-            commitPendingOffsets(consumer);
+            commitPendingOffsets(consumer, true);  // true = remove after commit
         }
 
         for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
