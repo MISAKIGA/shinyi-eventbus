@@ -294,7 +294,52 @@ public class KafkaEosBenchmarkTest {
         assertTrue(result.getSuccessCount() > 0, "Should successfully process messages");
     }
 
-    // ==================== Benchmark 6: EOS vs At-Least-Once Comparison ====================
+    // ==================== Benchmark 6: Sync vs Async Commit Comparison ====================
+
+    @Test
+    @DisplayName("EOS-Benchmark 6: Sync vs Async Consumer Commit")
+    void testEosSyncVsAsyncCommit() throws Exception {
+        log.info("\n========== SYNC VS ASYNC COMMIT BENCHMARK ==========");
+
+        String syncTopic = "eos-sync-commit-topic";
+        String asyncTopic = "eos-async-commit-topic";
+        int messageCount = 10000;
+        int commitBatchSize = 100;
+
+        // Pre-fill both topics
+        prefillMessages(syncTopic, messageCount);
+        prefillMessages(asyncTopic, messageCount);
+        Thread.sleep(1000);
+
+        // Sync commit benchmark
+        BenchmarkResult syncResult = runEosConsumerBenchmarkWithCommitType(
+                "EOS Consumer (Sync Commit)",
+                createEosConsumerConfig(syncTopic, commitBatchSize),
+                messageCount,
+                commitBatchSize,
+                true  // sync
+        );
+        results.add(syncResult);
+
+        // Async commit benchmark
+        BenchmarkResult asyncResult = runEosConsumerBenchmarkWithCommitType(
+                "EOS Consumer (Async Commit)",
+                createEosConsumerConfig(asyncTopic, commitBatchSize),
+                messageCount,
+                commitBatchSize,
+                false  // async
+        );
+        results.add(asyncResult);
+
+        printComparisonTable();
+
+        log.info("\nSync vs Async Commit: Sync={:.2f} msg/s, Async={:.2f} msg/s, 差异={:.2f}%",
+                syncResult.getThroughputMsgPerSec(),
+                asyncResult.getThroughputMsgPerSec(),
+                (asyncResult.getThroughputMsgPerSec() / syncResult.getThroughputMsgPerSec() - 1) * 100);
+    }
+
+    // ==================== Benchmark 7: EOS vs At-Least-Once Comparison ====================
 
     @Test
     @DisplayName("EOS-Benchmark 6: EOS vs At-Least-Once Comparison")
@@ -517,6 +562,63 @@ public class KafkaEosBenchmarkTest {
         }
 
         // Final commit
+        consumer.commitSync();
+        consumer.close();
+
+        long endTime = System.currentTimeMillis();
+        long duration = endTime - startTime;
+
+        return calculateResult(testName, config, expectedMessages, successCount, new AtomicLong(0),
+                totalBytes, duration, latencies, duplicateCount.get(), 0);
+    }
+
+    private BenchmarkResult runEosConsumerBenchmarkWithCommitType(String testName, KafkaConnectConfig config,
+                                                    int expectedMessages, int commitBatchSize,
+                                                    boolean syncCommit) throws Exception {
+        log.info("Starting EOS consumer benchmark ({}): {}", syncCommit ? "Sync" : "Async", testName);
+
+        Properties consumerProps = config.toConsumerProperties(true);
+        KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
+        consumer.subscribe(Collections.singletonList(config.getTopic()));
+
+        AtomicLong successCount = new AtomicLong(0);
+        AtomicLong totalBytes = new AtomicLong(0);
+        AtomicLong duplicateCount = new AtomicLong(0);
+        ConcurrentLinkedQueue<Long> latencies = new ConcurrentLinkedQueue<>();
+        Map<String, AtomicInteger> seenMessages = new ConcurrentHashMap<>();
+
+        long startTime = System.currentTimeMillis();
+        int pollCount = 0;
+
+        while (successCount.get() < expectedMessages && pollCount < 1000) {
+            ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(1000));
+            pollCount++;
+
+            for (ConsumerRecord<String, byte[]> record : records) {
+                long messageTime = System.currentTimeMillis() - record.timestamp();
+                latencies.add(messageTime);
+
+                // Check for duplicates
+                AtomicInteger count = seenMessages.computeIfAbsent(record.key(), k -> new AtomicInteger(0));
+                if (count.incrementAndGet() > 1) {
+                    duplicateCount.incrementAndGet();
+                }
+
+                successCount.incrementAndGet();
+                totalBytes.addAndGet(record.value() != null ? record.value().length : 0);
+
+                // Manual commit per batch
+                if (successCount.get() % commitBatchSize == 0) {
+                    if (syncCommit) {
+                        consumer.commitSync();
+                    } else {
+                        consumer.commitAsync();
+                    }
+                }
+            }
+        }
+
+        // Final commit - always use sync to ensure last batch is committed
         consumer.commitSync();
         consumer.close();
 
