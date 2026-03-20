@@ -83,7 +83,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
      */
     private static class OffsetCommitState {
         Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new ConcurrentHashMap<>();
-        int processedCount = 0;
+        AtomicInteger processedCount = new AtomicInteger(0);
     }
 
     public OptimizedKafkaMqEventListenerRegistry(ApplicationContext applicationContext, String registryBeanName,
@@ -283,10 +283,10 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
 
         TopicPartition tp = new TopicPartition(record.topic(), record.partition());
         state.pendingOffsets.put(tp, new OffsetAndMetadata(record.offset() + 1));
-        state.processedCount++;
+        state.processedCount.incrementAndGet();
 
         // Use processedCount (number of messages) not pendingOffsets.size() (number of partitions)
-        if (state.processedCount >= batchSize) {
+        if (state.processedCount.get() >= batchSize) {
             commitPendingOffsets(consumer);
         }
     }
@@ -311,7 +311,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                     log.debug("EOS: Committed offsets for {} partitions", state.pendingOffsets.size());
                 }
                 state.pendingOffsets.clear();
-                state.processedCount = 0;
+                state.processedCount.set(0);
             } catch (Exception e) {
                 if (!performanceMode) {
                     log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
@@ -431,6 +431,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                         errors.add(exception);
                     }
                     latch.countDown();
+                    releaseEventResult(result);
                 });
             } catch (Exception e) {
                 errors.add(e);
