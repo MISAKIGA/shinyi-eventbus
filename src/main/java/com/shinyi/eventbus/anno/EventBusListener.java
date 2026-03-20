@@ -40,13 +40,15 @@ public @interface EventBusListener {
 
     /**
      * 反序列化类型：
-     *   DEFAULT 默认,会将整个字符串序列化成 EventModel
-     *   BASIC 将字符串反序列化为entityType对象并传入到 EventModel.entity 字段
-     *      String.class | Byte[].class | byte[].class
+     *   EVENT 推荐 - 对称模式，只序列化/反序列化 entity（与 JSON 等效，语义更明确）
      *   JSON 将字符串用JSONUtil反序列化为entityType对象并传入到 EventModel.entity 字段
+     *   RAW 直接发送 entity 原始字节，不进行 JSON 包装（高性能模式）
      *   MSG 直接将对应框架的消息对象传入到 EventModel.entity 字段
+     *   BASIC 废弃 - 将字符串反序列化为entityType对象并传入到 EventModel.entity 字段
+     *      String.class | Byte[].class | byte[].class
+     *   DEFAULT 废弃 - 会将整个字符串序列化成 EventModel
      */
-    SerializeType deserializeType() default SerializeType.DEFAULT;
+    SerializeType deserializeType() default SerializeType.EVENT;
 
     /**
      * group

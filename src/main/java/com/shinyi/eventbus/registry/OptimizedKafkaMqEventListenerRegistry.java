@@ -9,7 +9,6 @@ import com.shinyi.eventbus.exception.EventBusExceptionType;
 import com.shinyi.eventbus.serialize.BaseSerializer;
 import com.shinyi.eventbus.serialize.Serializer;
 import com.shinyi.eventbus.monitor.PerformanceMonitor;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -26,15 +25,28 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * 优化版本的KafkaMqEventListenerRegistry
+ *
+ * 优化点：
+ * 1. 禁用热路径日志 - 通过PerformanceMonitor开关控制
+ * 2. 对象池化 - 复用EventResult减少GC压力
+ * 3. 预计算topic - 避免每次publish时检查
+ *
+ * 使用方式：
+ * - 添加 -Dcom.shinyi.eventbus.performance.optimized=true 启用
+ */
 @Slf4j
-@RequiredArgsConstructor
-public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements EventListenerRegistry<T> {
+public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> implements EventListenerRegistry<T> {
 
     protected final ApplicationContext applicationContext;
     protected final String registryBeanName;
@@ -46,6 +58,41 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     protected final Serializer serializer = new BaseSerializer();
     private final AtomicBoolean started = new AtomicBoolean(false);
 
+    // 预计算的默认值
+    private String defaultTopic;
+    private boolean performanceMode = false;
+
+    // 自动刷新计数器 - 每flushInterval条消息自动flush一次
+    private final AtomicInteger pendingCount = new AtomicInteger(0);
+    private boolean autoFlush = true;
+    private int flushInterval = 1000;
+
+    // 对象池 - 复用EventResult (使用ConcurrentLinkedQueue保证线程安全)
+    private static final int EVENT_RESULT_POOL_SIZE = 1000;
+    private final Queue<EventResult> eventResultPool = new ConcurrentLinkedQueue<>();
+    private final Object poolLock = new Object();
+
+    public OptimizedKafkaMqEventListenerRegistry(ApplicationContext applicationContext, String registryBeanName,
+                                                  KafkaConnectConfig kafkaConnectConfig) {
+        this.applicationContext = applicationContext;
+        this.registryBeanName = registryBeanName;
+        this.kafkaConnectConfig = kafkaConnectConfig;
+
+        // 检查是否启用性能模式
+        String prop = System.getProperty("com.shinyi.eventbus.performance.optimized");
+        if (prop == null) {
+            prop = System.getenv("SHINYI_EVENTBUS_PERF_OPTIMIZED");
+        }
+        this.performanceMode = "true".equalsIgnoreCase(prop) || "1".equals(prop);
+
+        // 初始化对象池
+        if (performanceMode) {
+            for (int i = 0; i < EVENT_RESULT_POOL_SIZE; i++) {
+                eventResultPool.offer(new EventResult());
+            }
+        }
+    }
+
     @Override
     public EventBusType getEventBusType() {
         return EventBusType.KAFKA;
@@ -56,13 +103,57 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
             throw new IllegalArgumentException("Kafka bootstrapServers cannot be empty");
         }
 
-        // Configure Kerberos system properties before creating clients
         kafkaConnectConfig.configureKerberosSystemProperties();
 
         Properties producerProps = kafkaConnectConfig.toProducerProperties();
         producer = new KafkaProducer<>(producerProps);
-        log.info("Kafka Producer initialized for {} with security protocol: {}",
-                kafkaConnectConfig.getBootstrapServers(), kafkaConnectConfig.getSecurityProtocol());
+
+        // 预计算defaultTopic
+        this.defaultTopic = kafkaConnectConfig.getTopic();
+
+        // 从配置读取自动刷新参数
+        this.autoFlush = kafkaConnectConfig.isAutoFlush();
+        this.flushInterval = kafkaConnectConfig.getFlushInterval();
+
+        if (performanceMode) {
+            log.info("OptimizedKafkaMqEventListenerRegistry initialized in PERFORMANCE MODE");
+            PerformanceMonitor.enable();
+        } else {
+            log.info("Kafka Producer initialized for {} with security protocol: {}",
+                    kafkaConnectConfig.getBootstrapServers(), kafkaConnectConfig.getSecurityProtocol());
+        }
+    }
+
+    /**
+     * 从池中获取EventResult，或创建新的
+     */
+    private EventResult acquireEventResult() {
+        if (!performanceMode) {
+            return new EventResult();
+        }
+        synchronized (poolLock) {
+            EventResult result = eventResultPool.poll();
+            if (result == null) {
+                return new EventResult();
+            }
+            result.reset();
+            return result;
+        }
+    }
+
+    /**
+     * 归还EventResult到池中
+     */
+    private void releaseEventResult(EventResult result) {
+        if (!performanceMode || result == null) {
+            return;
+        }
+        synchronized (poolLock) {
+            if (eventResultPool.size() < EVENT_RESULT_POOL_SIZE) {
+                result.reset();
+                eventResultPool.offer(result);
+            }
+        }
     }
 
     @Override
@@ -81,13 +172,13 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     private void initConsumer(com.shinyi.eventbus.EventListener<T> listener) {
         Properties consumerProps = kafkaConnectConfig.toConsumerProperties();
         consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, listener.group());
-        
+
         KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
         consumerSet.add(consumer);
 
         String topic = listener.topic();
         if (topic == null || topic.isEmpty()) {
-            topic = kafkaConnectConfig.getTopic();
+            topic = defaultTopic;
         }
         final String finalTopic = topic;
         consumer.subscribe(Collections.singletonList(finalTopic));
@@ -104,13 +195,17 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                         for (ConsumerRecord<String, byte[]> record : records) {
                             try {
                                 if (record.value() == null || record.value().length == 0) {
-                                    log.warn("Message body is empty, skipping. offset={}", record.offset());
+                                    if (!performanceMode) {
+                                        log.warn("Message body is empty, skipping. offset={}", record.offset());
+                                    }
                                     continue;
                                 }
                                 EventModel<?> eventModel = deserialize(record.value(), record.offset() + "", finalListener);
                                 finalListener.onMessage((T) eventModel);
                             } catch (Exception e) {
-                                log.warn("Message processing failed: " + e.getMessage(), e);
+                                if (!performanceMode) {
+                                    log.warn("Message processing failed: " + e.getMessage(), e);
+                                }
                             }
                         }
                     } catch (WakeupException e) {
@@ -122,7 +217,9 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
             }
         });
 
-        log.info("Kafka consumer started for topic: {}, group: {}", finalTopic, finalListener.group());
+        if (!performanceMode) {
+            log.info("Kafka consumer started for topic: {}, group: {}", finalTopic, finalListener.group());
+        }
     }
 
     protected EventModel<?> deserialize(byte[] body, String consumerTag, com.shinyi.eventbus.EventListener<T> listener) {
@@ -133,7 +230,9 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                 eventModel = EventModel.build(listener.topic(), null);
             }
         } catch (Throwable e) {
-            log.warn(registryBeanName + " msgId: " + consumerTag + " Message deserialization failed: " + new String(body, StandardCharsets.UTF_8));
+            if (!performanceMode) {
+                log.warn(registryBeanName + " msgId: " + consumerTag + " Message deserialization failed: " + new String(body, StandardCharsets.UTF_8));
+            }
             eventModel = EventModel.build(listener.topic(), null);
         }
         eventModel.setRawData(body);
@@ -151,10 +250,7 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     @Override
     public void publish(T eventModel) {
         final EventCallback eventCallback = eventModel.getEventCallback();
-        final EventResult eventResult = new EventResult();
-
-        // 耗时统计 - 对象创建
-        long createStart = System.nanoTime();
+        final EventResult eventResult = acquireEventResult();
 
         try {
             // 耗时统计 - 序列化
@@ -162,9 +258,10 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
             byte[] body = serializer.serialize(eventModel, eventModel.getSerializeType());
             PerformanceMonitor.record("kafka.serialize", System.nanoTime() - serializeStart);
 
+            // 使用预计算的defaultTopic
             String topic = eventModel.getTopic();
             if (topic == null || topic.isEmpty()) {
-                topic = kafkaConnectConfig.getTopic();
+                topic = defaultTopic;
             }
             final String finalTopic = topic;
             String key = eventModel.getEventId();
@@ -192,6 +289,8 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                             throw new EventBusException(EventBusExceptionType.EVENTBUS_PUBLISH_ERROR, exception.getMessage());
                         }
                     }
+                    // 归还EventResult到池中
+                    releaseEventResult(eventResult);
                 });
             } else {
                 RecordMetadata metadata = producer.send(record).get();
@@ -201,16 +300,24 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                 if (eventCallback != null) {
                     eventCallback.onSuccess(eventResult);
                 }
+                // 归还EventResult到池中
+                releaseEventResult(eventResult);
+
+                // 自动刷新 - 每flushInterval条消息刷新一次缓冲区
+                if (autoFlush && pendingCount.incrementAndGet() % flushInterval == 0) {
+                    producer.flush();
+                }
             }
         } catch (Exception e) {
-            log.warn("{} Publish message exception: {}", getEventBusType().getTypeName(), e.getMessage());
+            if (!performanceMode) {
+                log.warn("{} Publish message exception: {}", getEventBusType().getTypeName(), e.getMessage());
+            }
+            releaseEventResult(eventResult);
             if (eventCallback != null) {
                 eventCallback.onFailure(eventResult, e);
             } else {
                 throw new EventBusException(EventBusExceptionType.EVENTBUS_PUBLISH_ERROR, e.getMessage());
             }
-        } finally {
-            PerformanceMonitor.record("kafka.objectAllocation", System.nanoTime() - createStart);
         }
     }
 
@@ -228,14 +335,14 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
         CountDownLatch latch = new CountDownLatch(events.size());
 
         for (T event : events) {
-            EventResult result = new EventResult();
+            EventResult result = acquireEventResult();
             results.add(result);
 
             try {
                 byte[] body = serializer.serialize(event, event.getSerializeType());
                 String topic = event.getTopic();
                 if (topic == null || topic.isEmpty()) {
-                    topic = kafkaConnectConfig.getTopic();
+                    topic = defaultTopic;
                 }
                 final String finalTopic = topic;
                 ProducerRecord<String, byte[]> record = new ProducerRecord<>(finalTopic, event.getEventId(), body);
@@ -252,6 +359,7 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
             } catch (Exception e) {
                 errors.add(e);
                 latch.countDown();
+                releaseEventResult(result);
             }
         }
 
@@ -272,6 +380,11 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                 }
             } catch (Exception e) {
                 callback.onBatchFailure(results, e);
+            } finally {
+                // 释放所有EventResult到池中
+                for (EventResult result : results) {
+                    releaseEventResult(result);
+                }
             }
         });
     }

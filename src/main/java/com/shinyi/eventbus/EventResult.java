@@ -13,4 +13,13 @@ public class EventResult {
      * MQ Result 源对象
      */
     private Object sourceResult;
+
+    /**
+     * 重置状态以便复用
+     */
+    public void reset() {
+        this.messageId = null;
+        this.topic = null;
+        this.sourceResult = null;
+    }
 }
