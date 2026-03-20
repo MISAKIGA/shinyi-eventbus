@@ -147,6 +147,22 @@ public class KafkaConnectConfig {
      */
     private int commitBatchSize = 100;
 
+    // ==================== Producer Batch Flush Optimization (P0.4) ====================
+
+    /**
+     * Enable auto-flush after every N messages.
+     * When enabled, producer.flush() is called automatically after flushInterval messages.
+     * Default: true - matches kafka-demo periodic flush strategy for high throughput
+     */
+    private boolean autoFlush = true;
+
+    /**
+     * Number of messages to send before triggering a producer.flush().
+     * Only effective when autoFlush=true.
+     * Default: 1000 - matches kafka-demo batch size for optimal throughput
+     */
+    private int flushInterval = 1000;
+
     public Properties toProducerProperties() {
         Properties props = new Properties();
         props.put("bootstrap.servers", bootstrapServers);
@@ -327,6 +343,9 @@ public class KafkaConnectConfig {
                 ", enableIdempotence=" + enableIdempotence +
                 ", enableManualCommit=" + enableManualCommit +
                 ", commitBatchSize=" + commitBatchSize +
+                // Producer batch flush optimization (P0.4)
+                ", autoFlush=" + autoFlush +
+                ", flushInterval=" + flushInterval +
                 '}';
     }
 

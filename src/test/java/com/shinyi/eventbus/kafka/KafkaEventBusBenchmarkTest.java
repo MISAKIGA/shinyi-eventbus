@@ -53,6 +53,9 @@ public class KafkaEventBusBenchmarkTest {
     // Test results storage
     private final List<BenchmarkResult> results = new CopyOnWriteArrayList<>();
 
+    // Current Kafka registry reference for flush operations
+    private KafkaMqEventListenerRegistry<EventModel<?>> currentKafkaRegistry;
+
     @BeforeAll
     void startKafka() {
         network = Network.newNetwork();
@@ -461,30 +464,46 @@ public class KafkaEventBusBenchmarkTest {
     }
 
     /**
-     * Create config aligned with kafka-demo's optimized producer settings:
-     * - batch.size: 65536 (64KB)
-     * - linger.ms: 10
-     * - buffer.memory: 67108864 (64MB)
-     * - compression.type: snappy
-     * - acks: 1
-     * - retries: 3
+     * Create config fully aligned with kafka-demo's Optimized Producer settings.
+     *
+     * 对齐原因：
+     * 1. acks="all" - kafka-demo 所有测试都用 acks=all，这是启用 idempotence 的前提
+     *    - acks=1 只等 leader 确认，可能丢数据
+     *    - acks=all 等所有 ISR 确认，数据更安全
+     *
+     * 2. enable.idempotence=true - Exactly-Once 语义保证
+     *    - 防止消息重复发送
+     *    - Kafka 推荐在生产环境启用
+     *
+     * 3. retries=MAX_VALUE - Kafka 推荐值
+     *    - 确保网络抖动时消息能重试发送
+     *    - 配合 idempotence 避免消息重复
+     *
+     * 4. 中间 flush 策略 - 每 1000 条 flush 一次
+     *    - 让 broker 分批处理，而不是最后一次性 flush 全部
+     *    - 平衡延迟和吞吐量
+     *
+     * 对齐后的目标：达到 kafka-demo Optimized 的 50,000 msg/s 水平
      */
     private KafkaConnectConfig createKafkaDemoAlignedConfig() {
         KafkaConnectConfig config = new KafkaConnectConfig();
         config.setBootstrapServers(bootstrapServers);
         config.setTopic(TOPIC);
         config.setGroupId("raw-consumer-group");
-        // kafka-demo aligned settings
-        config.setAcks("1");
-        config.setRetries(3);
-        config.setBatchSize(65536);           // 64KB (kafka-demo)
-        config.setLingerMs(10);               // 10ms (kafka-demo)
-        config.setBufferMemory(67108864);      // 64MB (kafka-demo)
-        config.setCompressionType("snappy");   // Snappy (kafka-demo)
+        // kafka-demo Optimized Producer 对齐配置
+        config.setAcks("all");                    // 关键：对齐 kafka-demo，全部等待 ISR 确认
+        config.setRetries(Integer.MAX_VALUE);     // Kafka 推荐值，确保重试足够
+        config.setBatchSize(65536);               // 64KB batch
+        config.setLingerMs(10);                   // 10ms linger - Kafka内部 batching
+        config.setBufferMemory(67108864);         // 64MB buffer
+        config.setCompressionType("snappy");      // Snappy 压缩
         config.setMaxPollRecords(5000);
         config.setFetchMinBytes(1024);
         config.setFetchMaxWaitMs(1000);
         config.setMaxPartitionFetchBytes(1048576);
+        // 关闭 autoFlush - 依赖 Kafka 内部 batching 提升吞吐
+        config.setAutoFlush(false);
+        config.setFlushInterval(Integer.MAX_VALUE); // 几乎不触发
         return config;
     }
 
@@ -643,6 +662,10 @@ public class KafkaEventBusBenchmarkTest {
     /**
      * RAW mode producer benchmark - bypasses JSON serialization by using byte[] payload directly.
      * This is the fair comparison against kafka-demo's direct byte[] approach.
+     *
+     * 关键优化：对齐 kafka-demo 的 flush 策略
+     * - kafka-demo 每 1000 条 flush 一次，让 broker 分批处理
+     * - 而不是等到最后一次性 flush 全部 10 万条
      */
     private BenchmarkResult runRawProducerBenchmark(String testName, KafkaConnectConfig config,
                                                     int messageCount, int messageSize,
@@ -702,6 +725,12 @@ public class KafkaEventBusBenchmarkTest {
                 );
 
                 registryManager.publish(EventBusType.KAFKA, eventModel);
+
+                // 对齐 kafka-demo：每 1000 条 flush 一次，让 broker 分批处理
+                // 而不是等到最后一次性 flush 全部 10 万条
+                if (i > 0 && i % 1000 == 0) {
+                    currentKafkaRegistry.flush();
+                }
 
                 if (i > 0 && i % 10000 == 0) {
                     log.info("Sent {} / {} messages...", i, messageCount);
@@ -938,6 +967,9 @@ public class KafkaEventBusBenchmarkTest {
         KafkaMqEventListenerRegistry<EventModel<?>> kafkaRegistry =
                 new KafkaMqEventListenerRegistry<>(ctx, "kafka", config);
         kafkaRegistry.init();
+
+        // Save reference for flush operations
+        this.currentKafkaRegistry = kafkaRegistry;
 
         ctx.registerBean("kafkaEventListenerRegistry", EventListenerRegistry.class, () -> kafkaRegistry);
         ctx.registerBean(EventListenerRegistryManager.class);

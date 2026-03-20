@@ -26,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -213,6 +215,68 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     }
 
     @Override
+    public void publishBatch(List<T> events, BatchEventCallback callback) {
+        if (events == null || events.isEmpty()) {
+            return;
+        }
+        if (callback == null) {
+            throw new IllegalArgumentException("callback cannot be null");
+        }
+
+        List<EventResult> results = new ArrayList<>(events.size());
+        List<Throwable> errors = Collections.synchronizedList(new ArrayList<>());
+        CountDownLatch latch = new CountDownLatch(events.size());
+
+        for (T event : events) {
+            EventResult result = new EventResult();
+            results.add(result);
+
+            try {
+                byte[] body = serializer.serialize(event, event.getSerializeType());
+                String topic = event.getTopic();
+                if (topic == null || topic.isEmpty()) {
+                    topic = kafkaConnectConfig.getTopic();
+                }
+                final String finalTopic = topic;
+                ProducerRecord<String, byte[]> record = new ProducerRecord<>(finalTopic, event.getEventId(), body);
+
+                producer.send(record, (metadata, exception) -> {
+                    if (exception == null) {
+                        result.setMessageId(String.valueOf(metadata.offset()));
+                        result.setTopic(finalTopic);
+                    } else {
+                        errors.add(exception);
+                    }
+                    latch.countDown();
+                });
+            } catch (Exception e) {
+                errors.add(e);
+                latch.countDown();
+            }
+        }
+
+        // 异步等待所有发送完成并回调
+        CompletableFuture.runAsync(() -> {
+            try {
+                // 等待所有send回调完成
+                boolean completed = latch.await(5, TimeUnit.MINUTES);
+                // 刷新缓冲区确保所有消息被发送
+                producer.flush();
+
+                if (!completed) {
+                    callback.onBatchFailure(results, new RuntimeException("Batch send timeout"));
+                } else if (!errors.isEmpty()) {
+                    callback.onBatchFailure(results, errors.get(0));
+                } else {
+                    callback.onBatchComplete(results);
+                }
+            } catch (Exception e) {
+                callback.onBatchFailure(results, e);
+            }
+        });
+    }
+
+    @Override
     public void close() throws Exception {
         for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
             try {
@@ -231,6 +295,17 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                 producer.close();
             } catch (Throwable ignored) {
             }
+        }
+    }
+
+    /**
+     * Flush the producer buffer to ensure all pending messages are sent.
+     * 对齐 kafka-demo：每 N 条消息 flush 一次，让 broker 分批处理
+     */
+    @Override
+    public void flush() {
+        if (producer != null) {
+            producer.flush();
         }
     }
 }

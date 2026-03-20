@@ -25,7 +25,12 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -57,9 +62,14 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
     private String defaultTopic;
     private boolean performanceMode = false;
 
-    // 对象池 - 复用EventResult
+    // 自动刷新计数器 - 每flushInterval条消息自动flush一次
+    private final AtomicInteger pendingCount = new AtomicInteger(0);
+    private boolean autoFlush = true;
+    private int flushInterval = 1000;
+
+    // 对象池 - 复用EventResult (使用ConcurrentLinkedQueue保证线程安全)
     private static final int EVENT_RESULT_POOL_SIZE = 1000;
-    private final Queue<EventResult> eventResultPool = new ArrayDeque<>(EVENT_RESULT_POOL_SIZE);
+    private final Queue<EventResult> eventResultPool = new ConcurrentLinkedQueue<>();
     private final Object poolLock = new Object();
 
     public OptimizedKafkaMqEventListenerRegistry(ApplicationContext applicationContext, String registryBeanName,
@@ -101,6 +111,10 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         // 预计算defaultTopic
         this.defaultTopic = kafkaConnectConfig.getTopic();
 
+        // 从配置读取自动刷新参数
+        this.autoFlush = kafkaConnectConfig.isAutoFlush();
+        this.flushInterval = kafkaConnectConfig.getFlushInterval();
+
         if (performanceMode) {
             log.info("OptimizedKafkaMqEventListenerRegistry initialized in PERFORMANCE MODE");
             PerformanceMonitor.enable();
@@ -122,6 +136,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
             if (result == null) {
                 return new EventResult();
             }
+            result.reset();
             return result;
         }
     }
@@ -135,6 +150,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         }
         synchronized (poolLock) {
             if (eventResultPool.size() < EVENT_RESULT_POOL_SIZE) {
+                result.reset();
                 eventResultPool.offer(result);
             }
         }
@@ -286,6 +302,11 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                 }
                 // 归还EventResult到池中
                 releaseEventResult(eventResult);
+
+                // 自动刷新 - 每flushInterval条消息刷新一次缓冲区
+                if (autoFlush && pendingCount.incrementAndGet() % flushInterval == 0) {
+                    producer.flush();
+                }
             }
         } catch (Exception e) {
             if (!performanceMode) {
@@ -298,6 +319,74 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                 throw new EventBusException(EventBusExceptionType.EVENTBUS_PUBLISH_ERROR, e.getMessage());
             }
         }
+    }
+
+    @Override
+    public void publishBatch(List<T> events, BatchEventCallback callback) {
+        if (events == null || events.isEmpty()) {
+            return;
+        }
+        if (callback == null) {
+            throw new IllegalArgumentException("callback cannot be null");
+        }
+
+        List<EventResult> results = new ArrayList<>(events.size());
+        List<Throwable> errors = Collections.synchronizedList(new ArrayList<>());
+        CountDownLatch latch = new CountDownLatch(events.size());
+
+        for (T event : events) {
+            EventResult result = acquireEventResult();
+            results.add(result);
+
+            try {
+                byte[] body = serializer.serialize(event, event.getSerializeType());
+                String topic = event.getTopic();
+                if (topic == null || topic.isEmpty()) {
+                    topic = defaultTopic;
+                }
+                final String finalTopic = topic;
+                ProducerRecord<String, byte[]> record = new ProducerRecord<>(finalTopic, event.getEventId(), body);
+
+                producer.send(record, (metadata, exception) -> {
+                    if (exception == null) {
+                        result.setMessageId(String.valueOf(metadata.offset()));
+                        result.setTopic(finalTopic);
+                    } else {
+                        errors.add(exception);
+                    }
+                    latch.countDown();
+                });
+            } catch (Exception e) {
+                errors.add(e);
+                latch.countDown();
+                releaseEventResult(result);
+            }
+        }
+
+        // 异步等待所有发送完成并回调
+        CompletableFuture.runAsync(() -> {
+            try {
+                // 等待所有send回调完成
+                boolean completed = latch.await(5, TimeUnit.MINUTES);
+                // 刷新缓冲区确保所有消息被发送
+                producer.flush();
+
+                if (!completed) {
+                    callback.onBatchFailure(results, new RuntimeException("Batch send timeout"));
+                } else if (!errors.isEmpty()) {
+                    callback.onBatchFailure(results, errors.get(0));
+                } else {
+                    callback.onBatchComplete(results);
+                }
+            } catch (Exception e) {
+                callback.onBatchFailure(results, e);
+            } finally {
+                // 释放所有EventResult到池中
+                for (EventResult result : results) {
+                    releaseEventResult(result);
+                }
+            }
+        });
     }
 
     @Override
@@ -319,6 +408,17 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                 producer.close();
             } catch (Throwable ignored) {
             }
+        }
+    }
+
+    /**
+     * Flush the producer buffer to ensure all pending messages are sent.
+     * 对齐 kafka-demo：每 N 条消息 flush 一次，让 broker 分批处理
+     */
+    @Override
+    public void flush() {
+        if (producer != null) {
+            producer.flush();
         }
     }
 }
