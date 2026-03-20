@@ -195,6 +195,14 @@ public class KafkaConnectConfig {
     }
 
     public Properties toConsumerProperties() {
+        return toConsumerProperties(enableManualCommit);
+    }
+
+    /**
+     * Create consumer Properties with optional manual commit override.
+     * @param forceManualCommit if true, forces enable.auto.commit=false regardless of config
+     */
+    public Properties toConsumerProperties(boolean forceManualCommit) {
         Properties props = new Properties();
         props.put("bootstrap.servers", bootstrapServers);
         props.put("group.id", groupId);
@@ -218,7 +226,8 @@ public class KafkaConnectConfig {
         props.put("max.partition.fetch.bytes", maxPartitionFetchBytes);
 
         // Apply manual commit settings for EOS (P0.3)
-        if (enableManualCommit) {
+        // When exactlyOnce=true on listener, force manual commit
+        if (forceManualCommit || enableManualCommit) {
             props.put("enable.auto.commit", false);
         }
 
