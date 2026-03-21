@@ -3,7 +3,7 @@ package com.shinyi.eventbus.config.kafka;
 import com.shinyi.eventbus.EventBusType;
 import com.shinyi.eventbus.EventListenerRegistry;
 import com.shinyi.eventbus.EventModel;
-import com.shinyi.eventbus.registry.KafkaMqEventListenerRegistry;
+import com.shinyi.eventbus.registry.OptimizedKafkaMqEventListenerRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.InitializingBean;
@@ -26,7 +26,8 @@ public class KafkaAutoConfiguration implements InitializingBean {
     private final ApplicationContext applicationContext;
 
     private EventListenerRegistry<?> buildEventListenerRegistry(String beanName, KafkaConnectConfig kafkaConnectConfig) {
-        KafkaMqEventListenerRegistry<EventModel<?>> registry = new KafkaMqEventListenerRegistry<>(applicationContext, beanName, kafkaConnectConfig);
+        // Use OptimizedKafkaMqEventListenerRegistry for better performance with pooling and disabled logging
+        OptimizedKafkaMqEventListenerRegistry<EventModel<?>> registry = new OptimizedKafkaMqEventListenerRegistry<>(applicationContext, beanName, kafkaConnectConfig);
         try {
             registry.init();
         } catch (Exception e) {

@@ -184,9 +184,11 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
     }
 
     private void initConsumer(com.shinyi.eventbus.EventListener<T> listener) {
-        // EOS: Get EOS settings from listener BEFORE creating consumer
-        final boolean eosEnabled = listener.exactlyOnce();
-        final int commitBatchSize = listener.commitBatchSize();
+        // EOS: Get EOS settings - check listener annotation first, fall back to global config
+        final boolean eosEnabled = listener.exactlyOnce() || kafkaConnectConfig.isEnableManualCommit();
+        final int commitBatchSize = listener.commitBatchSize() > 0
+            ? listener.commitBatchSize()
+            : kafkaConnectConfig.getCommitBatchSize();
 
         Properties consumerProps = kafkaConnectConfig.toConsumerProperties(eosEnabled);
         consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, listener.group());

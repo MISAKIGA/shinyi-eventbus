@@ -218,7 +218,9 @@ public class EventListenerRegistryManager implements SmartLifecycle, Application
                 env.resolveRequiredPlaceholders(eventListener.exchangeType()),
                 env.resolveRequiredPlaceholders(eventListener.routingKey()),
                 eventListener.durable(),
-                eventListener.autoDelete()
+                eventListener.autoDelete(),
+                eventListener.exactlyOnce(),
+                eventListener.commitBatchSize()
         );
         EVENT_LISTENERS_MAP.put(registerBeanName, listener);
 

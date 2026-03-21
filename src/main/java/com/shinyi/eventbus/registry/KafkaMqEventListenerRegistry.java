@@ -1,5 +1,15 @@
 package com.shinyi.eventbus.registry;
 
+/**
+ * @deprecated Use {@link OptimizedKafkaMqEventListenerRegistry} instead.
+ * OptimizedKafkaMqEventListenerRegistry provides better performance through:
+ * - Object pooling (EventResult reuse)
+ * - Disabled hot-path logging
+ * - Pre-computed default topic
+ *
+ * This class is kept for backward compatibility only.
+ */
+
 import cn.hutool.core.collection.CollectionUtil;
 import cn.hutool.core.collection.ConcurrentHashSet;
 import com.shinyi.eventbus.*;
@@ -38,6 +48,7 @@ import java.util.concurrent.Executors;
 
 @Slf4j
 @RequiredArgsConstructor
+@Deprecated
 public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements EventListenerRegistry<T> {
 
     protected final ApplicationContext applicationContext;
@@ -94,9 +105,11 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     }
 
     private void initConsumer(com.shinyi.eventbus.EventListener<T> listener) {
-        // EOS: Get EOS settings from listener BEFORE creating consumer
-        final boolean eosEnabled = listener.exactlyOnce();
-        final int commitBatchSize = listener.commitBatchSize();
+        // EOS: Get EOS settings - check listener annotation first, fall back to global config
+        final boolean eosEnabled = listener.exactlyOnce() || kafkaConnectConfig.isEnableManualCommit();
+        final int commitBatchSize = listener.commitBatchSize() > 0
+            ? listener.commitBatchSize()
+            : kafkaConnectConfig.getCommitBatchSize();
 
         Properties consumerProps = kafkaConnectConfig.toConsumerProperties(eosEnabled);
         consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, listener.group());

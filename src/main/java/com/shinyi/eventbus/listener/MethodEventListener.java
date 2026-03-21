@@ -31,11 +31,14 @@ public class  MethodEventListener extends ExecutableEventListener<Object> {
     private final String routingKey;
     private final boolean durable;
     private final boolean autoDelete;
+    private final boolean exactlyOnce;
+    private final int commitBatchSize;
 
     public MethodEventListener(Object target, Method method, String topic, Class<?> entityType, String group,
                                String tags, String consumerMode, String[] registerBeanName, String appName,
                                String serializeType, String offset, String queue, String exchange, String exchangeType,
-                               String routingKey, boolean durable, boolean autoDelete) {
+                               String routingKey, boolean durable, boolean autoDelete,
+                               boolean exactlyOnce, int commitBatchSize) {
         this.target = target;
         this.method = method;
         this.topic = topic;
@@ -53,6 +56,18 @@ public class  MethodEventListener extends ExecutableEventListener<Object> {
         this.routingKey = routingKey;
         this.durable = durable;
         this.autoDelete = autoDelete;
+        this.exactlyOnce = exactlyOnce;
+        this.commitBatchSize = commitBatchSize;
+    }
+
+    @Override
+    public boolean exactlyOnce() {
+        return this.exactlyOnce;
+    }
+
+    @Override
+    public int commitBatchSize() {
+        return this.commitBatchSize;
     }
 
     @Override
