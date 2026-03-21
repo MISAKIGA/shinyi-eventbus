@@ -465,9 +465,9 @@ public class KafkaEventBusBenchmarkTest {
 
         // Comparison
         log.info("\n========== AUTOFLUSH COMPARISON RESULTS ==========");
-        log.info("AutoFlush=true (1000): {} msg/s", resultAutoFlush.getThroughput());
-        log.info("AutoFlush=false:        {} msg/s", resultNoFlush.getThroughput());
-        double improvement = (resultNoFlush.getThroughput() / resultAutoFlush.getThroughput() - 1) * 100;
+        log.info("AutoFlush=true (1000): {} msg/s", resultAutoFlush.throughputMsgPerSec);
+        log.info("AutoFlush=false:        {} msg/s", resultNoFlush.throughputMsgPerSec);
+        double improvement = (resultNoFlush.throughputMsgPerSec / resultAutoFlush.throughputMsgPerSec - 1) * 100;
         log.info("Difference: {:.2f}%", improvement);
 
         System.clearProperty("com.shinyi.eventbus.performance.optimized");
