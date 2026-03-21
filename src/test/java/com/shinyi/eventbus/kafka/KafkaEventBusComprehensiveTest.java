@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class KafkaEventBusComprehensiveTest {
 
     private static final String TOPIC = "comprehensive-test-topic";
-    private static final int MESSAGE_COUNT = 5_000;
+    private static final int MESSAGE_COUNT = 10_000;
     private static final int MESSAGE_SIZE = 1024;
 
     private KafkaContainer kafkaContainer;
@@ -63,7 +63,7 @@ public class KafkaEventBusComprehensiveTest {
 
         Startables.deepStart(kafkaContainer).join();
         bootstrapServers = kafkaContainer.getBootstrapServers();
-        log.info("Kafka started at: {}", bootstrapServers);
+        System.out.println("Kafka started at: " + bootstrapServers);
     }
 
     @AfterAll
@@ -84,7 +84,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("Producer: Async + Batch (autoFlush=false)")
     void testProducerAsyncBatch() throws Exception {
-        log.info("\n========== PRODUCER: ASYNC + BATCH ==========");
+        System.out.println("\n========== PRODUCER: ASYNC + BATCH ==========");
 
         KafkaConnectConfig config = createBaseConfig();
         config.setAcks("all");
@@ -93,7 +93,7 @@ public class KafkaEventBusComprehensiveTest {
         config.setAutoFlush(false);
         config.setFlushInterval(Integer.MAX_VALUE);
 
-        TestResult result = runProducerTest("Async+Batch", config, false, false);
+        TestResult result = runProducerTest("Async+Batch", config, false, true);
         allResults.add(result);
         printResult(result);
     }
@@ -104,7 +104,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("Producer: Sync + No Batch (autoFlush=true)")
     void testProducerSyncNoBatch() throws Exception {
-        log.info("\n========== PRODUCER: SYNC + NO BATCH ==========");
+        System.out.println("\n========== PRODUCER: SYNC + NO BATCH ==========");
 
         KafkaConnectConfig config = createBaseConfig();
         config.setAcks("all");
@@ -124,7 +124,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("Producer: Async + Periodic Flush (flushInterval=1000)")
     void testProducerPeriodicFlush() throws Exception {
-        log.info("\n========== PRODUCER: ASYNC + PERIODIC FLUSH ==========");
+        System.out.println("\n========== PRODUCER: ASYNC + PERIODIC FLUSH ==========");
 
         KafkaConnectConfig config = createBaseConfig();
         config.setAcks("all");
@@ -133,7 +133,7 @@ public class KafkaEventBusComprehensiveTest {
         config.setAutoFlush(true);
         config.setFlushInterval(1000);
 
-        TestResult result = runProducerTest("PeriodicFlush", config, false, false);
+        TestResult result = runProducerTest("PeriodicFlush", config, false, true);
         allResults.add(result);
         printResult(result);
     }
@@ -144,14 +144,14 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("Producer: EOS (idempotent=true)")
     void testProducerEos() throws Exception {
-        log.info("\n========== PRODUCER: EOS (IDEMPOTENT) ==========");
+        System.out.println("\n========== PRODUCER: EOS (IDEMPOTENT) ==========");
 
         KafkaConnectConfig config = createBaseConfig();
         config.setEnableIdempotence(true);
         config.setAutoFlush(false);
         config.setFlushInterval(Integer.MAX_VALUE);
 
-        TestResult result = runProducerTest("EOS-Producer", config, true, false);
+        TestResult result = runProducerTest("EOS-Producer", config, true, true);
         allResults.add(result);
         printResult(result);
     }
@@ -162,7 +162,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("Producer: High Throughput (compression=snappy, large batch)")
     void testProducerHighThroughput() throws Exception {
-        log.info("\n========== PRODUCER: HIGH THROUGHPUT ==========");
+        System.out.println("\n========== PRODUCER: HIGH THROUGHPUT ==========");
 
         KafkaConnectConfig config = createBaseConfig();
         config.setAcks("all");
@@ -173,7 +173,7 @@ public class KafkaEventBusComprehensiveTest {
         config.setAutoFlush(false);
         config.setFlushInterval(Integer.MAX_VALUE);
 
-        TestResult result = runProducerTest("HighThroughput", config, false, false);
+        TestResult result = runProducerTest("HighThroughput", config, false, true);
         allResults.add(result);
         printResult(result);
     }
@@ -186,7 +186,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("Consumer: Auto-Commit")
     void testConsumerAutoCommit() throws Exception {
-        log.info("\n========== CONSUMER: AUTO-COMMIT ==========");
+        System.out.println("\n========== CONSUMER: AUTO-COMMIT ==========");
 
         // First produce messages
         KafkaConnectConfig prodConfig = createBaseConfig();
@@ -209,7 +209,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("Consumer: Manual Commit (commitBatchSize=100)")
     void testConsumerManualCommit() throws Exception {
-        log.info("\n========== CONSUMER: MANUAL COMMIT ==========");
+        System.out.println("\n========== CONSUMER: MANUAL COMMIT ==========");
 
         // First produce messages
         KafkaConnectConfig prodConfig = createBaseConfig();
@@ -234,7 +234,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("Consumer: High Throughput (large fetch)")
     void testConsumerHighThroughput() throws Exception {
-        log.info("\n========== CONSUMER: HIGH THROUGHPUT ==========");
+        System.out.println("\n========== CONSUMER: HIGH THROUGHPUT ==========");
 
         // First produce messages
         KafkaConnectConfig prodConfig = createBaseConfig();
@@ -262,7 +262,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("End-to-End: Non-EOS Pipeline")
     void testEndToEndNonEos() throws Exception {
-        log.info("\n========== E2E: NON-EOS PIPELINE ==========");
+        System.out.println("\n========== E2E: NON-EOS PIPELINE ==========");
 
         KafkaConnectConfig config = createBaseConfig();
         config.setAcks("all");
@@ -272,7 +272,7 @@ public class KafkaEventBusComprehensiveTest {
         config.setEnableIdempotence(false);
         config.setEnableAutoCommit(true);
 
-        TestResult prodResult = runProducerTest("E2E-NonEOS-Producer", config, false, false);
+        TestResult prodResult = runProducerTest("E2E-NonEOS-Producer", config, false, true);
         TestResult consResult = runConsumerTest("E2E-NonEOS-Consumer", config, MESSAGE_COUNT, false);
 
         allResults.add(prodResult);
@@ -292,7 +292,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("End-to-End: EOS Pipeline (idempotent + manual commit)")
     void testEndToEndEos() throws Exception {
-        log.info("\n========== E2E: EOS PIPELINE ==========");
+        System.out.println("\n========== E2E: EOS PIPELINE ==========");
 
         KafkaConnectConfig config = createBaseConfig();
         config.setAcks("all");
@@ -304,7 +304,7 @@ public class KafkaEventBusComprehensiveTest {
         config.setEnableManualCommit(true);
         config.setCommitBatchSize(100);
 
-        TestResult prodResult = runProducerTest("E2E-EOS-Producer", config, true, false);
+        TestResult prodResult = runProducerTest("E2E-EOS-Producer", config, true, true);
         TestResult consResult = runConsumerTest("E2E-EOS-Consumer", config, MESSAGE_COUNT, true);
 
         allResults.add(prodResult);
@@ -325,7 +325,7 @@ public class KafkaEventBusComprehensiveTest {
     @Test
     @DisplayName("Producer: Multi-threaded (4 threads)")
     void testMultiThreadedProducer() throws Exception {
-        log.info("\n========== PRODUCER: MULTI-THREADED (4 threads) ==========");
+        System.out.println("\n========== PRODUCER: MULTI-THREADED (4 threads) ==========");
 
         KafkaConnectConfig config = createBaseConfig();
         config.setAcks("all");
@@ -343,24 +343,24 @@ public class KafkaEventBusComprehensiveTest {
 
     @AfterAll
     void printSummary() {
-        log.info("\n");
-        log.info("╔════════════════════════════════════════════════════════════════════════════════════╗");
-        log.info("║                         COMPREHENSIVE TEST SUMMARY                                ║");
-        log.info("╠════════════════════════════════════════════════════════════════════════════════════╣");
+        System.out.println();
+        System.out.println("╔════════════════════════════════════════════════════════════════════════════════════╗");
+        System.out.println("║                         COMPREHENSIVE TEST SUMMARY                                ║");
+        System.out.println("╠════════════════════════════════════════════════════════════════════════════════════╣");
 
         // Sort by throughput
         allResults.sort((a, b) -> Double.compare(b.throughputMsgPerSec, a.throughputMsgPerSec));
 
         for (TestResult r : allResults) {
-            log.info("║ {:35s} │ {:10.2f} msg/s │ {:6.2f} MB/s │ {} │ {}  ║",
+            System.out.printf("║ %-35s │ %10.2f msg/s │ %6.2f MB/s │ %-5s │ %-8s ║%n",
                     r.testName,
                     r.throughputMsgPerSec,
                     r.mbPerSec,
-                    r.async ? "ASYNC" : "SYNC ",
+                    r.async ? "ASYNC" : "SYNC",
                     r.eos ? "EOS" : "NON-EOS");
         }
 
-        log.info("╚════════════════════════════════════════════════════════════════════════════════════╝");
+        System.out.println("╚════════════════════════════════════════════════════════════════════════════════════╝");
 
         // Find best configurations
         Optional<TestResult> bestProducer = allResults.stream()
@@ -371,9 +371,10 @@ public class KafkaEventBusComprehensiveTest {
                 .filter(r -> r.testName.contains("Consumer"))
                 .max(Comparator.comparingDouble(r -> r.throughputMsgPerSec));
 
-        log.info("\n🏆 BEST CONFIGURATIONS:");
-        bestProducer.ifPresent(r -> log.info("  Producer: {} with {:.2f} msg/s", r.testName, r.throughputMsgPerSec));
-        bestConsumer.ifPresent(r -> log.info("  Consumer: {} with {:.2f} msg/s", r.testName, r.throughputMsgPerSec));
+        System.out.println();
+        System.out.println("BEST CONFIGURATIONS:");
+        bestProducer.ifPresent(r -> System.out.printf("  Producer: %s with %.2f msg/s%n", r.testName, r.throughputMsgPerSec));
+        bestConsumer.ifPresent(r -> System.out.printf("  Consumer: %s with %.2f msg/s%n", r.testName, r.throughputMsgPerSec));
 
         // EOS overhead
         TestResult nonEos = allResults.stream()
@@ -387,9 +388,10 @@ public class KafkaEventBusComprehensiveTest {
 
         if (nonEos != null && eos != null) {
             double overhead = (eos.throughputMsgPerSec / nonEos.throughputMsgPerSec - 1) * 100;
-            log.info("\n📊 EOS OVERHEAD: {:.2f}%", overhead);
-            log.info("  Non-EOS: {:.2f} msg/s", nonEos.throughputMsgPerSec);
-            log.info("  EOS: {:.2f} msg/s", eos.throughputMsgPerSec);
+            System.out.println();
+            System.out.printf("EOS OVERHEAD: %.2f%%%n", overhead);
+            System.out.printf("  Non-EOS: %.2f msg/s%n", nonEos.throughputMsgPerSec);
+            System.out.printf("  EOS: %.2f msg/s%n", eos.throughputMsgPerSec);
         }
     }
 
@@ -412,7 +414,7 @@ public class KafkaEventBusComprehensiveTest {
 
     private TestResult runProducerTest(String testName, KafkaConnectConfig config,
                                         boolean eos, boolean async) throws Exception {
-        log.info("Starting producer test: {}", testName);
+        System.out.println("Starting producer test: " + testName);
 
         EventListenerRegistryManager registryManager = createRegistryManager(config);
         registryManager.start();
@@ -469,7 +471,7 @@ public class KafkaEventBusComprehensiveTest {
 
     private TestResult runMultiThreadedProducerTest(String testName, KafkaConnectConfig config,
                                                      int threadCount, int messagesPerThread) throws Exception {
-        log.info("Starting multi-threaded producer test: {} with {} threads", testName, threadCount);
+        System.out.println("Starting multi-threaded producer test: " + testName + " with " + threadCount + " threads");
 
         EventListenerRegistryManager registryManager = createRegistryManager(config);
         registryManager.start();
@@ -534,7 +536,7 @@ public class KafkaEventBusComprehensiveTest {
 
     private TestResult runConsumerTest(String testName, KafkaConnectConfig config,
                                         int expectedMessages, boolean checkDuplicates) throws Exception {
-        log.info("Starting consumer test: {}", testName);
+        System.out.println("Starting consumer test: " + testName);
 
         Properties consumerProps = config.toConsumerProperties();
         KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
@@ -634,15 +636,15 @@ public class KafkaEventBusComprehensiveTest {
     }
 
     private void printResult(TestResult result) {
-        log.info("━━━ {} ━━━", result.testName);
-        log.info("  Throughput: {:.2f} msg/s ({:.2f} MB/s)", result.throughputMsgPerSec, result.mbPerSec);
-        log.info("  Duration: {} ms", result.durationMs);
-        log.info("  Success: {} / {} ({} failures)",
+        System.out.println("━━━ " + result.testName + " ━━━");
+        System.out.printf("  Throughput: %.2f msg/s (%.2f MB/s)%n", result.throughputMsgPerSec, result.mbPerSec);
+        System.out.println("  Duration: " + result.durationMs + " ms");
+        System.out.printf("  Success: %d / %d (%d failures)%n",
                 result.successCount, result.messageCount, result.failureCount);
         if (result.duplicateCount > 0) {
-            log.info("  Duplicates: {}", result.duplicateCount);
+            System.out.println("  Duplicates: " + result.duplicateCount);
         }
-        log.info("  Mode: {} | {}", result.async ? "ASYNC" : "SYNC", result.eos ? "EOS" : "NON-EOS");
+        System.out.println("  Mode: " + (result.async ? "ASYNC" : "SYNC") + " | " + (result.eos ? "EOS" : "NON-EOS"));
     }
 
     @Data
