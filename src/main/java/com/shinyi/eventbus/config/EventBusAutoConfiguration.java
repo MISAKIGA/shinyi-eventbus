@@ -2,6 +2,8 @@ package com.shinyi.eventbus.config;
 
 import com.shinyi.eventbus.EventListenerRegistry;
 import com.shinyi.eventbus.EventModel;
+import com.shinyi.eventbus.config.kafka.KafkaAutoConfiguration;
+import com.shinyi.eventbus.config.kafka.KafkaConfig;
 import com.shinyi.eventbus.config.rabbit.RabbitMqAutoConfiguration;
 import com.shinyi.eventbus.config.rabbit.RabbitMqConfig;
 import com.shinyi.eventbus.config.rocketmq.RocketMqAutoConfiguration;
@@ -26,7 +28,8 @@ import java.util.concurrent.ThreadPoolExecutor;
  */
 @Slf4j
 @RequiredArgsConstructor
-@Import({RocketMqConfig.class, RocketMqAutoConfiguration.class,
+@Import({KafkaConfig.class, KafkaAutoConfiguration.class,
+        RocketMqConfig.class, RocketMqAutoConfiguration.class,
         RabbitMqConfig.class, RabbitMqAutoConfiguration.class})
 public class EventBusAutoConfiguration implements InitializingBean {
 
