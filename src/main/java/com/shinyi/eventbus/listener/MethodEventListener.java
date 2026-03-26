@@ -3,16 +3,20 @@ package com.shinyi.eventbus.listener;
 import cn.hutool.core.collection.CollectionUtil;
 import com.shinyi.eventbus.EventBusContext;
 import com.shinyi.eventbus.EventModel;
+import lombok.extern.slf4j.Slf4j;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.Collection;
 import java.util.List;
 
 /**
  * @author MSGA
  */
-public class  MethodEventListener extends ExecutableEventListener<Object> {
+@Slf4j
+public class MethodEventListener extends ExecutableEventListener<Object> {
 
     private final Object target;
     private final Method method;
@@ -58,6 +62,22 @@ public class  MethodEventListener extends ExecutableEventListener<Object> {
         this.autoDelete = autoDelete;
         this.exactlyOnce = exactlyOnce;
         this.commitBatchSize = commitBatchSize;
+
+        // Check if method parameter is List type for batch processing
+        checkMethodParameterType();
+    }
+
+    private void checkMethodParameterType() {
+        Class<?>[] paramTypes = method.getParameterTypes();
+        if (paramTypes.length > 0) {
+            Class<?> firstParamType = paramTypes[0];
+            if (!List.class.isAssignableFrom(firstParamType)) {
+                log.warn("[EventBusListener] 方法 {} 的第一个参数类型 {} 不是 List，建议使用 List<EventModel> 格式以支持批量处理，提升性能。方法签名示例: public void onEvent(List<{}> events)",
+                        method.getName(),
+                        firstParamType.getSimpleName(),
+                        entityType.getSimpleName());
+            }
+        }
     }
 
     @Override

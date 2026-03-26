@@ -101,7 +101,7 @@ public class EventListenerRegistryManager implements SmartLifecycle, Application
         } finally {
             com.shinyi.eventbus.monitor.PerformanceMonitor.record("registry.publish", System.nanoTime() - publishStart);
             if (!com.shinyi.eventbus.monitor.PerformanceMonitor.isEnabled()) {
-                log.info("{} 事件发布 {} 耗时：{}", eventBusTypeName, event.getTopic(), System.currentTimeMillis() - publishStart);
+                log.info("{} 事件发布 {} 耗时：{} ms", eventBusTypeName, event.getTopic(), (System.nanoTime() - publishStart) / 1_000_000);
             }
         }
     }
