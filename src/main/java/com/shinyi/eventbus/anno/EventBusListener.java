@@ -121,4 +121,19 @@ public @interface EventBusListener {
      * Default: 100
      */
     int commitBatchSize() default 100;
+
+    /**
+     * 是否传递 entity 实体（true）还是完整的 EventModel（false）。
+     *
+     * true（默认）：将 entity 从 EventModel 中提取出来传递给监听器方法
+     *   - 方法签名 List<String> → 收到 List<String>
+     *   - 方法签名 List<MyEvent> → 收到 List<MyEvent>
+     *
+     * false：传递完整的 EventModel 给监听器方法
+     *   - 方法签名 List<EventModel> → 收到 List<EventModel>
+     *   - 用户可自行从 EventModel 获取 entity、eventId、group 等元数据
+     *
+     * Default: true（向后兼容）
+     */
+    boolean passEntity() default true;
 }

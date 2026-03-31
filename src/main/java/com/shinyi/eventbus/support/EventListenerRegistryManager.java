@@ -220,7 +220,8 @@ public class EventListenerRegistryManager implements SmartLifecycle, Application
                 eventListener.durable(),
                 eventListener.autoDelete(),
                 eventListener.exactlyOnce(),
-                eventListener.commitBatchSize()
+                eventListener.commitBatchSize(),
+                eventListener.passEntity()
         );
         EVENT_LISTENERS_MAP.put(registerBeanName, listener);
 

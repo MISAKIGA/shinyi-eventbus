@@ -16,7 +16,6 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -33,7 +32,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -47,6 +45,12 @@ import java.util.concurrent.Executors;
  *
  * 使用方式：
  * - 添加 -Dcom.shinyi.eventbus.performance.optimized=true 启用
+ *
+ * 架构说明：
+ * - ProducerHandler: Kafka生产者封装，处理消息发送和批量发送
+ * - ConsumerHandler: Kafka消费者封装，处理消息消费和EOS
+ * - EosOffsetManager: EOS语义下的offset管理
+ * - EventResultPool: EventResult对象池，减少GC压力
  */
 @Slf4j
 public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> implements EventListenerRegistry<T> {
@@ -55,9 +59,8 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
     protected final String registryBeanName;
     protected final KafkaConnectConfig kafkaConnectConfig;
 
-    private KafkaProducer<String, byte[]> producer;
-    private final Set<KafkaConsumer<String, byte[]>> consumerSet = new ConcurrentHashSet<>();
-    private final Set<ExecutorService> executorSet = new ConcurrentHashSet<>();
+    private final ProducerHandler producerHandler;
+    private final ConsumerHandler consumerHandler;
     protected final Serializer serializer = new BaseSerializer();
     private final AtomicBoolean started = new AtomicBoolean(false);
 
@@ -70,21 +73,8 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
     private boolean autoFlush = true;
     private int flushInterval = 1000;
 
-    // 对象池 - 复用EventResult (使用ConcurrentLinkedQueue保证线程安全)
-    private static final int EVENT_RESULT_POOL_SIZE = 1000;
-    private final Queue<EventResult> eventResultPool = new ConcurrentLinkedQueue<>();
-    private final Object poolLock = new Object();
-
     // EOS: Offset tracking for manual commit
-    private final Map<KafkaConsumer<String, byte[]>, OffsetCommitState> offsetStates = new ConcurrentHashMap<>();
-
-    /**
-     * EOS: Offset tracking state per consumer
-     */
-    private static class OffsetCommitState {
-        Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new ConcurrentHashMap<>();
-        AtomicInteger processedCount = new AtomicInteger(0);
-    }
+    private final EosOffsetManager eosOffsetManager;
 
     public OptimizedKafkaMqEventListenerRegistry(ApplicationContext applicationContext, String registryBeanName,
                                                   KafkaConnectConfig kafkaConnectConfig) {
@@ -99,12 +89,10 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         }
         this.performanceMode = "true".equalsIgnoreCase(prop) || "1".equals(prop);
 
-        // 初始化对象池
-        if (performanceMode) {
-            for (int i = 0; i < EVENT_RESULT_POOL_SIZE; i++) {
-                eventResultPool.offer(new EventResult());
-            }
-        }
+        // 初始化组件
+        this.producerHandler = new ProducerHandler();
+        this.consumerHandler = new ConsumerHandler();
+        this.eosOffsetManager = new EosOffsetManager();
     }
 
     @Override
@@ -119,8 +107,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
 
         kafkaConnectConfig.configureKerberosSystemProperties();
 
-        Properties producerProps = kafkaConnectConfig.toProducerProperties();
-        producer = new KafkaProducer<>(producerProps);
+        producerHandler.init(kafkaConnectConfig);
 
         // 预计算defaultTopic
         this.defaultTopic = kafkaConnectConfig.getTopic();
@@ -138,38 +125,6 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         }
     }
 
-    /**
-     * 从池中获取EventResult，或创建新的
-     */
-    private EventResult acquireEventResult() {
-        if (!performanceMode) {
-            return new EventResult();
-        }
-        synchronized (poolLock) {
-            EventResult result = eventResultPool.poll();
-            if (result == null) {
-                return new EventResult();
-            }
-            result.reset();
-            return result;
-        }
-    }
-
-    /**
-     * 归还EventResult到池中
-     */
-    private void releaseEventResult(EventResult result) {
-        if (!performanceMode || result == null) {
-            return;
-        }
-        synchronized (poolLock) {
-            if (eventResultPool.size() < EVENT_RESULT_POOL_SIZE) {
-                result.reset();
-                eventResultPool.offer(result);
-            }
-        }
-    }
-
     @Override
     public void initRegistryEventListener(List<com.shinyi.eventbus.EventListener<T>> listener) {
         if (listener == null) {
@@ -178,76 +133,9 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         CompletableFuture[] futures = listener.stream()
                 .filter(l -> CollectionUtil.isNotEmpty(l.registryBeanName()) && CollectionUtil.contains(l.registryBeanName(), registryBeanName)
                         || CollectionUtil.isEmpty(l.registryBeanName()) && kafkaConnectConfig.getIsDefault())
-                .map(l -> CompletableFuture.runAsync(() -> initConsumer(l)))
+                .map(l -> CompletableFuture.runAsync(() -> consumerHandler.initConsumer(l, defaultTopic, kafkaConnectConfig, eosOffsetManager, this::deserialize)))
                 .toArray(CompletableFuture[]::new);
         CompletableFuture.allOf(futures).join();
-    }
-
-    private void initConsumer(com.shinyi.eventbus.EventListener<T> listener) {
-        // EOS: Get EOS settings - check listener annotation first, fall back to global config
-        final boolean eosEnabled = listener.exactlyOnce() || kafkaConnectConfig.isEnableManualCommit();
-        final int commitBatchSize = listener.commitBatchSize() > 0
-            ? listener.commitBatchSize()
-            : kafkaConnectConfig.getCommitBatchSize();
-
-        Properties consumerProps = kafkaConnectConfig.toConsumerProperties(eosEnabled);
-        consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, listener.group());
-
-        KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
-        consumerSet.add(consumer);
-
-        String topic = listener.topic();
-        if (topic == null || topic.isEmpty()) {
-            topic = defaultTopic;
-        }
-        final String finalTopic = topic;
-        consumer.subscribe(Collections.singletonList(finalTopic));
-
-        ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, "kafka-consumer-" + finalTopic));
-        executorSet.add(executor);
-
-        final com.shinyi.eventbus.EventListener<T> finalListener = listener;
-        executor.submit(() -> {
-            try {
-                while (!Thread.currentThread().isInterrupted()) {
-                    try {
-                        ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(1000));
-                        for (ConsumerRecord<String, byte[]> record : records) {
-                            try {
-                                if (record.value() == null || record.value().length == 0) {
-                                    if (!performanceMode) {
-                                        log.warn("Message body is empty, skipping. offset={}", record.offset());
-                                    }
-                                    continue;
-                                }
-                                EventModel<?> eventModel = deserialize(record.value(), record.offset() + "", finalListener);
-                                finalListener.onMessage((T) eventModel);
-                                // EOS: Track offset for manual commit after successful processing
-                                if (eosEnabled) {
-                                    trackOffsetAndCommit(consumer, record, commitBatchSize);
-                                }
-                            } catch (Exception e) {
-                                if (!performanceMode) {
-                                    log.warn("Message processing failed: " + e.getMessage(), e);
-                                }
-                            }
-                        }
-                    } catch (WakeupException e) {
-                        break;
-                    }
-                }
-            } finally {
-                // EOS: Commit pending offsets before shutdown and cleanup
-                if (eosEnabled) {
-                    commitPendingOffsets(consumer, true);  // true = remove after commit
-                }
-                consumer.close();
-            }
-        });
-
-        if (!performanceMode) {
-            log.info("Kafka consumer started for topic: {}, group: {}", finalTopic, finalListener.group());
-        }
     }
 
     protected EventModel<?> deserialize(byte[] body, String consumerTag, com.shinyi.eventbus.EventListener<T> listener) {
@@ -275,223 +163,29 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         return eventModel;
     }
 
-    /**
-     * EOS: Track offset and commit when batch size reached
-     */
-    private void trackOffsetAndCommit(KafkaConsumer<String, byte[]> consumer,
-                                     ConsumerRecord<String, byte[]> record,
-                                     int batchSize) {
-        OffsetCommitState state = offsetStates.computeIfAbsent(consumer, k -> new OffsetCommitState());
-
-        TopicPartition tp = new TopicPartition(record.topic(), record.partition());
-        state.pendingOffsets.put(tp, new OffsetAndMetadata(record.offset() + 1));
-        state.processedCount.incrementAndGet();
-
-        // Use processedCount (number of messages) not pendingOffsets.size() (number of partitions)
-        if (state.processedCount.get() >= batchSize) {
-            commitPendingOffsets(consumer);
-        }
-    }
-
-    /**
-     * EOS: Commit pending offsets to Kafka
-     */
-    private void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer) {
-        commitPendingOffsets(consumer, false);
-    }
-
-    /**
-     * EOS: Commit pending offsets to Kafka
-     * @param removeAfterCommit if true, remove the consumer entry from offsetStates after committing
-     */
-    private void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer, boolean removeAfterCommit) {
-        OffsetCommitState state = offsetStates.get(consumer);
-        if (state != null && !state.pendingOffsets.isEmpty()) {
-            try {
-                consumer.commitSync(new HashMap<>(state.pendingOffsets));
-                if (!performanceMode) {
-                    log.debug("EOS: Committed offsets for {} partitions", state.pendingOffsets.size());
-                }
-                state.pendingOffsets.clear();
-                state.processedCount.set(0);
-            } catch (Exception e) {
-                if (!performanceMode) {
-                    log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
-                }
-            }
-        }
-        if (removeAfterCommit) {
-            offsetStates.remove(consumer);
-        }
-    }
-
     @Override
     public void publish(T eventModel) {
-        final EventCallback eventCallback = eventModel.getEventCallback();
-        final EventResult eventResult = acquireEventResult();
-
-        try {
-            // 耗时统计 - 序列化
-            long serializeStart = System.nanoTime();
-            byte[] body = serializer.serialize(eventModel, eventModel.getSerializeType());
-            PerformanceMonitor.record("kafka.serialize", System.nanoTime() - serializeStart);
-
-            // 使用预计算的defaultTopic
-            String topic = eventModel.getTopic();
-            if (topic == null || topic.isEmpty()) {
-                topic = defaultTopic;
-            }
-            final String finalTopic = topic;
-            String key = eventModel.getEventId();
-
-            // 耗时统计 - ProducerRecord创建
-            long recordCreateStart = System.nanoTime();
-            ProducerRecord<String, byte[]> record = new ProducerRecord<>(finalTopic, key, body);
-            PerformanceMonitor.record("kafka.recordCreate", System.nanoTime() - recordCreateStart);
-
-            // 耗时统计 - 实际发送
-            long sendStart = System.nanoTime();
-            if (eventModel.isEnableAsync()) {
-                producer.send(record, (metadata, exception) -> {
-                    PerformanceMonitor.record("kafka.send", System.nanoTime() - sendStart);
-                    if (exception == null) {
-                        eventResult.setMessageId(String.valueOf(metadata.offset()));
-                        eventResult.setTopic(finalTopic);
-                        if (eventCallback != null) {
-                            eventCallback.onSuccess(eventResult);
-                        }
-                    } else {
-                        if (eventCallback != null) {
-                            eventCallback.onFailure(eventResult, exception);
-                        } else {
-                            throw new EventBusException(EventBusExceptionType.EVENTBUS_PUBLISH_ERROR, exception.getMessage());
-                        }
-                    }
-                    // 归还EventResult到池中
-                    releaseEventResult(eventResult);
-                });
-            } else {
-                RecordMetadata metadata = producer.send(record).get();
-                PerformanceMonitor.record("kafka.send", System.nanoTime() - sendStart);
-                eventResult.setMessageId(String.valueOf(metadata.offset()));
-                eventResult.setTopic(topic);
-                if (eventCallback != null) {
-                    eventCallback.onSuccess(eventResult);
-                }
-                // 归还EventResult到池中
-                releaseEventResult(eventResult);
-
-                // 自动刷新 - 每flushInterval条消息刷新一次缓冲区
-                if (autoFlush && pendingCount.incrementAndGet() % flushInterval == 0) {
-                    producer.flush();
-                }
-            }
-        } catch (Exception e) {
-            if (!performanceMode) {
-                log.warn("{} Publish message exception: {}", getEventBusType().getTypeName(), e.getMessage());
-            }
-            releaseEventResult(eventResult);
-            if (eventCallback != null) {
-                eventCallback.onFailure(eventResult, e);
-            } else {
-                throw new EventBusException(EventBusExceptionType.EVENTBUS_PUBLISH_ERROR, e.getMessage());
-            }
-        }
+        producerHandler.publish(eventModel, defaultTopic, autoFlush, flushInterval, pendingCount, performanceMode,
+                (er) -> acquireEventResult(er),
+                (er) -> releaseEventResult(er),
+                registryBeanName, getEventBusType());
     }
 
     @Override
     public void publishBatch(List<T> events, BatchEventCallback callback) {
-        if (events == null || events.isEmpty()) {
-            return;
-        }
-        if (callback == null) {
-            throw new IllegalArgumentException("callback cannot be null");
-        }
-
-        List<EventResult> results = new ArrayList<>(events.size());
-        List<Throwable> errors = Collections.synchronizedList(new ArrayList<>());
-        CountDownLatch latch = new CountDownLatch(events.size());
-
-        for (T event : events) {
-            EventResult result = acquireEventResult();
-            results.add(result);
-
-            try {
-                byte[] body = serializer.serialize(event, event.getSerializeType());
-                String topic = event.getTopic();
-                if (topic == null || topic.isEmpty()) {
-                    topic = defaultTopic;
-                }
-                final String finalTopic = topic;
-                ProducerRecord<String, byte[]> record = new ProducerRecord<>(finalTopic, event.getEventId(), body);
-
-                producer.send(record, (metadata, exception) -> {
-                    if (exception == null) {
-                        result.setMessageId(String.valueOf(metadata.offset()));
-                        result.setTopic(finalTopic);
-                    } else {
-                        errors.add(exception);
-                    }
-                    latch.countDown();
-                    releaseEventResult(result);
-                });
-            } catch (Exception e) {
-                errors.add(e);
-                latch.countDown();
-                releaseEventResult(result);
-            }
-        }
-
-        // 异步等待所有发送完成并回调
-        CompletableFuture.runAsync(() -> {
-            try {
-                // 等待所有send回调完成
-                boolean completed = latch.await(5, TimeUnit.MINUTES);
-                // 刷新缓冲区确保所有消息被发送
-                producer.flush();
-
-                if (!completed) {
-                    callback.onBatchFailure(results, new RuntimeException("Batch send timeout"));
-                } else if (!errors.isEmpty()) {
-                    callback.onBatchFailure(results, errors.get(0));
-                } else {
-                    callback.onBatchComplete(results);
-                }
-            } catch (Exception e) {
-                callback.onBatchFailure(results, e);
-            } finally {
-                // 释放所有EventResult到池中
-                for (EventResult result : results) {
-                    releaseEventResult(result);
-                }
-            }
-        });
+        producerHandler.publishBatch(events, defaultTopic, performanceMode,
+                (er) -> acquireEventResult(er),
+                (er) -> releaseEventResult(er),
+                callback);
     }
 
     @Override
     public void close() throws Exception {
         // EOS: Commit pending offsets for all consumers before shutdown and cleanup
-        for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
-            commitPendingOffsets(consumer, true);  // true = remove after commit
-        }
+        consumerHandler.shutdown(eosOffsetManager, performanceMode);
 
-        for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
-            try {
-                consumer.wakeup();
-            } catch (Throwable ignored) {
-            }
-        }
-        for (ExecutorService executor : executorSet) {
-            try {
-                executor.shutdownNow();
-            } catch (Throwable ignored) {
-            }
-        }
-        if (producer != null) {
-            try {
-                producer.close();
-            } catch (Throwable ignored) {
-            }
+        if (producerHandler != null) {
+            producerHandler.close();
         }
     }
 
@@ -501,8 +195,417 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
      */
     @Override
     public void flush() {
-        if (producer != null) {
-            producer.flush();
+        producerHandler.flush();
+    }
+
+    // ==================== Inner Classes ====================
+
+    /**
+     * EventResult对象池 - 复用EventResult减少GC压力
+     */
+    private static final int EVENT_RESULT_POOL_SIZE = 1000;
+    private final Queue<EventResult> eventResultPool = new ConcurrentLinkedQueue<>();
+    private final Object poolLock = new Object();
+
+    /**
+     * 从池中获取EventResult，或创建新的
+     */
+    private EventResult acquireEventResult(EventResult reuse) {
+        if (!performanceMode) {
+            return reuse;
         }
+        synchronized (poolLock) {
+            EventResult result = eventResultPool.poll();
+            if (result == null) {
+                return new EventResult();
+            }
+            result.reset();
+            return result;
+        }
+    }
+
+    private EventResult acquireEventResult() {
+        return acquireEventResult(new EventResult());
+    }
+
+    /**
+     * 归还EventResult到池中
+     */
+    private void releaseEventResult(EventResult result) {
+        if (!performanceMode || result == null) {
+            return;
+        }
+        synchronized (poolLock) {
+            if (eventResultPool.size() < EVENT_RESULT_POOL_SIZE) {
+                result.reset();
+                eventResultPool.offer(result);
+            }
+        }
+    }
+
+    /**
+     * 初始化对象池
+     */
+    private void initEventResultPool() {
+        if (performanceMode) {
+            for (int i = 0; i < EVENT_RESULT_POOL_SIZE; i++) {
+                eventResultPool.offer(new EventResult());
+            }
+        }
+    }
+
+    // ==================== ProducerHandler ====================
+
+    /**
+     * Kafka生产者处理器
+     * 封装所有生产者相关的操作
+     */
+    private class ProducerHandler {
+        private KafkaProducer<String, byte[]> producer;
+
+        void init(KafkaConnectConfig config) {
+            Properties producerProps = config.toProducerProperties();
+            this.producer = new KafkaProducer<>(producerProps);
+        }
+
+        void publish(T eventModel, String defaultTopic, boolean autoFlush, int flushInterval,
+                     AtomicInteger pendingCount, boolean performanceMode,
+                     java.util.function.Function<EventResult, EventResult> acquire,
+                     java.util.function.Consumer<EventResult> release,
+                     String registryBeanName, EventBusType eventBusType) {
+            final EventCallback eventCallback = eventModel.getEventCallback();
+            final EventResult eventResult = acquire.apply(new EventResult());
+
+            try {
+                // 耗时统计 - 序列化
+                long serializeStart = System.nanoTime();
+                byte[] body = serializer.serialize(eventModel, eventModel.getSerializeType());
+                PerformanceMonitor.record("kafka.serialize", System.nanoTime() - serializeStart);
+
+                // 使用预计算的defaultTopic
+                String topic = eventModel.getTopic();
+                if (topic == null || topic.isEmpty()) {
+                    topic = defaultTopic;
+                }
+                final String finalTopic = topic;
+                String key = eventModel.getEventId();
+
+                // 耗时统计 - ProducerRecord创建
+                long recordCreateStart = System.nanoTime();
+                ProducerRecord<String, byte[]> record = new ProducerRecord<>(finalTopic, key, body);
+                PerformanceMonitor.record("kafka.recordCreate", System.nanoTime() - recordCreateStart);
+
+                // 耗时统计 - 实际发送
+                long sendStart = System.nanoTime();
+                if (eventModel.isEnableAsync()) {
+                    producer.send(record, (metadata, exception) -> {
+                        PerformanceMonitor.record("kafka.send", System.nanoTime() - sendStart);
+                        if (exception == null) {
+                            eventResult.setMessageId(String.valueOf(metadata.offset()));
+                            eventResult.setTopic(finalTopic);
+                            if (eventCallback != null) {
+                                eventCallback.onSuccess(eventResult);
+                            }
+                        } else {
+                            if (eventCallback != null) {
+                                eventCallback.onFailure(eventResult, exception);
+                            } else {
+                                throw new EventBusException(EventBusExceptionType.EVENTBUS_PUBLISH_ERROR, exception.getMessage());
+                            }
+                        }
+                        // 归还EventResult到池中
+                        release.accept(eventResult);
+                    });
+                } else {
+                    RecordMetadata metadata = producer.send(record).get();
+                    PerformanceMonitor.record("kafka.send", System.nanoTime() - sendStart);
+                    eventResult.setMessageId(String.valueOf(metadata.offset()));
+                    eventResult.setTopic(topic);
+                    if (eventCallback != null) {
+                        eventCallback.onSuccess(eventResult);
+                    }
+                    // 归还EventResult到池中
+                    release.accept(eventResult);
+
+                    // 自动刷新 - 每flushInterval条消息刷新一次缓冲区
+                    if (autoFlush && pendingCount.incrementAndGet() % flushInterval == 0) {
+                        producer.flush();
+                    }
+                }
+            } catch (Exception e) {
+                if (!performanceMode) {
+                    log.warn("{} Publish message exception: {}", eventBusType.getTypeName(), e.getMessage());
+                }
+                release.accept(eventResult);
+                if (eventCallback != null) {
+                    eventCallback.onFailure(eventResult, e);
+                } else {
+                    throw new EventBusException(EventBusExceptionType.EVENTBUS_PUBLISH_ERROR, e.getMessage());
+                }
+            }
+        }
+
+        void publishBatch(List<T> events, String defaultTopic, boolean performanceMode,
+                          java.util.function.Function<EventResult, EventResult> acquire,
+                          java.util.function.Consumer<EventResult> release,
+                          BatchEventCallback callback) {
+            if (events == null || events.isEmpty()) {
+                return;
+            }
+            if (callback == null) {
+                throw new IllegalArgumentException("callback cannot be null");
+            }
+
+            List<EventResult> results = new ArrayList<>(events.size());
+            List<Throwable> errors = Collections.synchronizedList(new ArrayList<>());
+            CountDownLatch latch = new CountDownLatch(events.size());
+
+            for (T event : events) {
+                EventResult result = acquire.apply(new EventResult());
+                results.add(result);
+
+                try {
+                    byte[] body = serializer.serialize(event, event.getSerializeType());
+                    String topic = event.getTopic();
+                    if (topic == null || topic.isEmpty()) {
+                        topic = defaultTopic;
+                    }
+                    final String finalTopic = topic;
+                    ProducerRecord<String, byte[]> record = new ProducerRecord<>(finalTopic, event.getEventId(), body);
+
+                    producer.send(record, (metadata, exception) -> {
+                        if (exception == null) {
+                            result.setMessageId(String.valueOf(metadata.offset()));
+                            result.setTopic(finalTopic);
+                        } else {
+                            errors.add(exception);
+                        }
+                        latch.countDown();
+                        release.accept(result);
+                    });
+                } catch (Exception e) {
+                    errors.add(e);
+                    latch.countDown();
+                    release.accept(result);
+                }
+            }
+
+            // 异步等待所有发送完成并回调
+            CompletableFuture.runAsync(() -> {
+                try {
+                    // 等待所有send回调完成
+                    boolean completed = latch.await(5, TimeUnit.MINUTES);
+                    // 刷新缓冲区确保所有消息被发送
+                    producer.flush();
+
+                    if (!completed) {
+                        callback.onBatchFailure(results, new RuntimeException("Batch send timeout"));
+                    } else if (!errors.isEmpty()) {
+                        callback.onBatchFailure(results, errors.get(0));
+                    } else {
+                        callback.onBatchComplete(results);
+                    }
+                } catch (Exception e) {
+                    callback.onBatchFailure(results, e);
+                } finally {
+                    // 释放所有EventResult到池中
+                    for (EventResult result : results) {
+                        release.accept(result);
+                    }
+                }
+            });
+        }
+
+        void flush() {
+            if (producer != null) {
+                producer.flush();
+            }
+        }
+
+        void close() {
+            if (producer != null) {
+                try {
+                    producer.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    // ==================== ConsumerHandler ====================
+
+    /**
+     * Kafka消费者处理器
+     * 封装所有消费者相关的操作
+     */
+    private class ConsumerHandler {
+        private final Set<KafkaConsumer<String, byte[]>> consumerSet = new ConcurrentHashSet<>();
+        private final Set<ExecutorService> executorSet = new ConcurrentHashSet<>();
+
+        void initConsumer(com.shinyi.eventbus.EventListener<T> listener, String defaultTopic,
+                          KafkaConnectConfig config, EosOffsetManager eosManager,
+                          DeserializeFunction<T> deserializeFn) {
+            // EOS: Get EOS settings - check listener annotation first, fall back to global config
+            final boolean eosEnabled = listener.exactlyOnce() || config.isEnableManualCommit();
+            final int commitBatchSize = listener.commitBatchSize() > 0
+                ? listener.commitBatchSize()
+                : config.getCommitBatchSize();
+
+            Properties consumerProps = config.toConsumerProperties(eosEnabled);
+            consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, listener.group());
+
+            KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
+            consumerSet.add(consumer);
+
+            String topic = listener.topic();
+            if (topic == null || topic.isEmpty()) {
+                topic = defaultTopic;
+            }
+            final String finalTopic = topic;
+            consumer.subscribe(Collections.singletonList(finalTopic));
+
+            ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, "kafka-consumer-" + finalTopic));
+            executorSet.add(executor);
+
+            final com.shinyi.eventbus.EventListener<T> finalListener = listener;
+            executor.submit(() -> {
+                try {
+                    while (!Thread.currentThread().isInterrupted()) {
+                        try {
+                            ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(1000));
+                            for (ConsumerRecord<String, byte[]> record : records) {
+                                try {
+                                    if (record.value() == null || record.value().length == 0) {
+                                        if (!performanceMode) {
+                                            log.warn("Message body is empty, skipping. offset={}", record.offset());
+                                        }
+                                        continue;
+                                    }
+                                    EventModel<?> eventModel = deserializeFn.apply(record.value(), record.offset() + "", finalListener);
+                                    finalListener.onMessage((T) eventModel);
+                                    // EOS: Track offset for manual commit after successful processing
+                                    if (eosEnabled) {
+                                        eosManager.trackOffsetAndCommit(consumer, record, commitBatchSize);
+                                    }
+                                } catch (Exception e) {
+                                    if (!performanceMode) {
+                                        log.warn("Message processing failed: " + e.getMessage(), e);
+                                    }
+                                }
+                            }
+                        } catch (WakeupException e) {
+                            break;
+                        }
+                    }
+                } finally {
+                    // EOS: Commit pending offsets before shutdown and cleanup
+                    if (eosEnabled) {
+                        eosManager.commitPendingOffsets(consumer, true);  // true = remove after commit
+                    }
+                    consumer.close();
+                }
+            });
+
+            if (!performanceMode) {
+                log.info("Kafka consumer started for topic: {}, group: {}", finalTopic, finalListener.group());
+            }
+        }
+
+        void shutdown(EosOffsetManager eosManager, boolean performanceMode) {
+            // EOS: Commit pending offsets for all consumers before shutdown and cleanup
+            for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
+                eosManager.commitPendingOffsets(consumer, true);  // true = remove after commit
+            }
+
+            for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
+                try {
+                    consumer.wakeup();
+                } catch (Throwable ignored) {
+                }
+            }
+            for (ExecutorService executor : executorSet) {
+                try {
+                    executor.shutdownNow();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    // ==================== EosOffsetManager ====================
+
+    /**
+     * EOS (Exactly-Once Semantics) Offset管理器
+     * 处理EOS语义下的offset提交
+     */
+    private class EosOffsetManager {
+        private final Map<KafkaConsumer<String, byte[]>, OffsetCommitState> offsetStates = new ConcurrentHashMap<>();
+
+        /**
+         * EOS: Track offset and commit when batch size reached
+         */
+        void trackOffsetAndCommit(KafkaConsumer<String, byte[]> consumer,
+                                  ConsumerRecord<String, byte[]> record,
+                                  int batchSize) {
+            OffsetCommitState state = offsetStates.computeIfAbsent(consumer, k -> new OffsetCommitState());
+
+            TopicPartition tp = new TopicPartition(record.topic(), record.partition());
+            state.pendingOffsets.put(tp, new OffsetAndMetadata(record.offset() + 1));
+            state.processedCount.incrementAndGet();
+
+            // Use processedCount (number of messages) not pendingOffsets.size() (number of partitions)
+            if (state.processedCount.get() >= batchSize) {
+                commitPendingOffsets(consumer);
+            }
+        }
+
+        /**
+         * EOS: Commit pending offsets to Kafka
+         */
+        void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer) {
+            commitPendingOffsets(consumer, false);
+        }
+
+        /**
+         * EOS: Commit pending offsets to Kafka
+         * @param removeAfterCommit if true, remove the consumer entry from offsetStates after committing
+         */
+        void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer, boolean removeAfterCommit) {
+            OffsetCommitState state = offsetStates.get(consumer);
+            if (state != null && !state.pendingOffsets.isEmpty()) {
+                try {
+                    consumer.commitSync(new HashMap<>(state.pendingOffsets));
+                    if (!performanceMode) {
+                        log.debug("EOS: Committed offsets for {} partitions", state.pendingOffsets.size());
+                    }
+                    state.pendingOffsets.clear();
+                    state.processedCount.set(0);
+                } catch (Exception e) {
+                    if (!performanceMode) {
+                        log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
+                    }
+                }
+            }
+            if (removeAfterCommit) {
+                offsetStates.remove(consumer);
+            }
+        }
+    }
+
+    // ==================== OffsetCommitState ====================
+
+    /**
+     * EOS: Offset tracking state per consumer
+     */
+    private static class OffsetCommitState {
+        Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new ConcurrentHashMap<>();
+        AtomicInteger processedCount = new AtomicInteger(0);
+    }
+
+    // ==================== Functional Interface ====================
+
+    @FunctionalInterface
+    interface DeserializeFunction<T> {
+        EventModel<?> apply(byte[] body, String consumerTag, com.shinyi.eventbus.EventListener<T> listener);
     }
 }

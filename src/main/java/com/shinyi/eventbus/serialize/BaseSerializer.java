@@ -12,14 +12,13 @@ public class BaseSerializer implements Serializer {
 
     @Override
     public byte[] serialize(EventModel<?> object, String serializeType) {
-        serializeType = Optional.ofNullable(serializeType).orElse("DEFAULT");
+        serializeType = Optional.ofNullable(serializeType).orElse("EVENT");
         switch (serializeType) {
             case "EVENT":
-                // EVENT 模式：与 JSON 相同，只序列化 entity
-                // 推荐的对称模式，与 deserialize 的 EVENT 模式对应
+                // EVENT 模式（推荐）：只序列化 entity，对称模式
             case "JSON":
-                // JSON 模式：只序列化 entity，不包装 EventModel JSON
-                // 与 deserialize 的 JSON 模式对应（deserialize 只反序列化 entity）
+                // JSON 模式：与 EVENT 等效（代码复用，由于 fall-through）
+                // 注意：推荐使用 EVENT 模式以保持命名一致性
                 if (object.getEntity() == null) {
                     return new byte[0];
                 }
@@ -32,9 +31,13 @@ public class BaseSerializer implements Serializer {
                 }
                 return serializeEntityToBytes(object.getEntity());
             case "BASIC":
+                // BASIC 模式（废弃）：仅支持 String/byte[] 类型
+                log.warn("BASIC serialization is deprecated, use EVENT or RAW instead");
                 return String.valueOf(object).getBytes(StandardCharsets.UTF_8);
             case "DEFAULT":
             default:
+                // DEFAULT 模式（废弃）：序列化整个 EventModel JSON
+                log.warn("DEFAULT serialization is deprecated, use EVENT instead");
                 return JsonUtils.toJsonString(object).getBytes(StandardCharsets.UTF_8);
         }
     }
@@ -59,9 +62,10 @@ public class BaseSerializer implements Serializer {
         EventModel<?> eventModel;
         switch (serializeType) {
             case "EVENT":
-                // EVENT 模式：与 JSON 相同，只反序列化 entity
-                // 推荐的对称模式，与 serialize 的 EVENT 模式对应
+                // EVENT 模式（推荐）：只反序列化 entity，对称模式
             case "JSON":
+                // JSON 模式：与 EVENT 等效（代码复用，由于 fall-through）
+                // 注意：推荐使用 EVENT 模式以保持命名一致性
                 eventModel = EventModel.build(null, JsonUtils.parseObject(new String(bytes), entityType));
                 break;
             case "RAW":
@@ -69,15 +73,16 @@ public class BaseSerializer implements Serializer {
                 eventModel = EventModel.build(null, deserializeEntityFromBytes(bytes, entityType));
                 break;
             case "MSG":
-                // 取消息体
+                // MSG 模式：取消息体（返回 null entity，由消费者自行处理原生消息）
                 eventModel = EventModel.build(null, null);
                 break;
             case "BASIC":
+                // BASIC 模式（废弃）：仅支持 String/byte[] 类型
                 eventModel = EventModel.build(null, deserialize2Basic(bytes, entityType));
                 break;
             case "DEFAULT":
             default:
-                // 取消息内容
+                // DEFAULT 模式（废弃）：尝试完整 EventModel 解析，失败后回退到 entity
                 String jsonStr = new String(bytes);
                 eventModel = JsonUtils.parseObject(jsonStr, EventModel.class, entityType);
                 if(eventModel == null) {
