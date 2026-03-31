@@ -8,22 +8,27 @@ package com.shinyi.eventbus;
 public enum SerializeType {
 
     /**
-     * 对称模式：只序列化/反序列化 entity（推荐用于跨 MQ 通信）
-     * 与 JSON 模式等效，但语义更明确
+     * 对称模式（推荐）：只序列化/反序列化 entity
+     * 推荐用于跨 MQ 通信，与 EVENT 模式等效
      */
     EVENT("EVENT"),
     /**
      * 废弃：默认模式，序列化整个 EventModel JSON，反序列化时先尝试 EventModel 再回退到 entity
-     * 存在序列化不对称问题，建议使用 EVENT 或 JSON 模式替代
+     * 存在序列化不对称问题，建议使用 EVENT 模式替代
      */
     @Deprecated
     DEFAULT("DEFAULT"),
     /**
      * 废弃：仅支持 String/byte[] 类型的简单序列化
-     * 建议使用 EVENT 或 JSON 模式替代
+     * 建议使用 EVENT 或 RAW 模式替代
      */
     @Deprecated
     BASIC("BASIC"),
+    /**
+     * JSON 模式：与 EVENT 等效，语义更通用
+     * 推荐使用 EVENT 模式以保持命名一致性
+     */
+    @Deprecated
     JSON("JSON"),
     MSG("MSG"),
     /**

@@ -417,6 +417,66 @@ public class KafkaEventBusBenchmarkTest {
         assertEquals(MESSAGE_COUNT, result.getSuccessCount(), "Should send all messages");
     }
 
+    /**
+     * Benchmark 9: Compare autoFlush enabled vs disabled
+     * Tests whether periodic flush helps or hurts throughput
+     */
+    @Test
+    @DisplayName("Benchmark 9: AutoFlush Comparison (enabled vs disabled)")
+    void testAutoFlushComparison() throws Exception {
+        System.setProperty("com.shinyi.eventbus.performance.optimized", "true");
+        PerformanceMonitor.enable();
+        PerformanceMonitor.reset();
+
+        log.info("\n========== AUTOFLUSH COMPARISON BENCHMARK ==========");
+
+        // Test 1: autoFlush=true (flush every 1000 messages)
+        KafkaConnectConfig configAutoFlush = createKafkaDemoAlignedConfig();
+        configAutoFlush.setAutoFlush(true);
+        configAutoFlush.setFlushInterval(1000);
+
+        log.info("\n--- Test 1: autoFlush=true, flushInterval=1000 ---");
+        BenchmarkResult resultAutoFlush = runOptimizedRawProducerBenchmark(
+                "AutoFlush Enabled (1000)",
+                configAutoFlush,
+                MESSAGE_COUNT,
+                MESSAGE_SIZE,
+                false
+        );
+        results.add(resultAutoFlush);
+        printResult(resultAutoFlush);
+
+        // Test 2: autoFlush=false (rely on Kafka internal batching)
+        PerformanceMonitor.reset();
+        KafkaConnectConfig configNoFlush = createKafkaDemoAlignedConfig();
+        configNoFlush.setAutoFlush(false);
+        configNoFlush.setFlushInterval(Integer.MAX_VALUE);
+
+        log.info("\n--- Test 2: autoFlush=false (internal batching) ---");
+        BenchmarkResult resultNoFlush = runOptimizedRawProducerBenchmark(
+                "AutoFlush Disabled",
+                configNoFlush,
+                MESSAGE_COUNT,
+                MESSAGE_SIZE,
+                false
+        );
+        results.add(resultNoFlush);
+        printResult(resultNoFlush);
+
+        // Comparison
+        log.info("\n========== AUTOFLUSH COMPARISON RESULTS ==========");
+        log.info("AutoFlush=true (1000): {} msg/s", resultAutoFlush.throughputMsgPerSec);
+        log.info("AutoFlush=false:        {} msg/s", resultNoFlush.throughputMsgPerSec);
+        double improvement = (resultNoFlush.throughputMsgPerSec / resultAutoFlush.throughputMsgPerSec - 1) * 100;
+        log.info("Difference: {:.2f}%", improvement);
+
+        System.clearProperty("com.shinyi.eventbus.performance.optimized");
+
+        // Assertions
+        assertTrue(resultAutoFlush.getSuccessCount() > 0, "Should successfully send messages with autoFlush");
+        assertTrue(resultNoFlush.getSuccessCount() > 0, "Should successfully send messages without autoFlush");
+    }
+
     // ==================== Helper Methods ====================
 
     private KafkaConnectConfig createBaselineConfig() {
@@ -424,9 +484,9 @@ public class KafkaEventBusBenchmarkTest {
         config.setBootstrapServers(bootstrapServers);
         config.setTopic(TOPIC);
         config.setGroupId("baseline-consumer-group");
-        // Default settings - no optimization
-        config.setAcks("1");
-        config.setRetries(3);
+        // Default settings aligned with kafka-demo
+        config.setAcks("all");
+        config.setRetries(Integer.MAX_VALUE);
         config.setBatchSize(16384);
         config.setLingerMs(1);
         config.setBufferMemory(33554432);

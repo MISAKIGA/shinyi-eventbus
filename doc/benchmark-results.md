@@ -3,22 +3,28 @@
 ## 测试环境
 
 - **测试框架**: JUnit 5 + Testcontainers
-- **Kafka版本**: Confluent CP Kafka 7.5.0
+- **Kafka版本**: Confluent CP Kafka 7.5.0 (Docker 容器)
 - **消息数量**: 100,000 条/测试
 - **消息大小**: 1KB
-- **测试日期**: 2026-03-19
+- **测试日期**: 2026-03-20
 
 ## 测试结果摘要
 
-| 测试名称 | 执行时间 | 吞吐量估算 | 配置 |
-|---------|---------|-----------|------|
-| Baseline Producer | 26.07s | ~3,846 msg/s | acks=1, batch=16KB, linger=1ms |
-| Optimized Producer | 27.20s | ~3,676 msg/s | acks=1, batch=64KB, linger=10ms, snappy |
-| EOS Producer | 25.73s | ~3,885 msg/s | acks=all, idempotence=true, batch=64KB, snappy |
-| Optimized Consumer | 35.12s | ~2,847 msg/s | max.poll.records=5000, fetch.min=1KB |
-| EOS Consumer | 29.17s | ~3,428 msg/s | manual.commit=false, max.poll.records=5000 |
+| 测试名称 | 执行时间 | 吞吐量 | 配置 |
+|---------|---------|--------|------|
+| Baseline Producer | 25.9s | ~3,856 msg/s | acks=1, batch=16KB, linger=1ms |
+| Optimized Producer | 23.5s | ~4,252 msg/s | acks=1, batch=64KB, linger=10ms, snappy |
+| RAW Producer (kafka-demo) | 24.5s | ~4,362 msg/s | acks=all, batch=64KB, linger=10ms, snappy |
+| Multi-Threaded RAW (4线程) | 7.65s | **~13,068 msg/s** | 4并行producer |
+| Optimized RAW (pooled) | 23.9s | ~4,252 msg/s | 对象池化, 禁用日志 |
+| EOS Producer | 24.1s | ~4,151 msg/s | acks=all, idempotence=true, batch=64KB |
+| Optimized Consumer | 2.76s | ~36,298 msg/s | max.poll.records=5000, fetch.min=1KB |
+| EOS Consumer | 0.99s | ~100,462 msg/s | manual.commit, max.poll.records=5000 |
+| EOS Multi-Partition (3分区) | 2.68s | ~37,369 msg/s | 3分区并行消费 |
 
-**总计**: 6个测试, 164.5秒, 0失败, 0错误
+**注意**: Consumer 速度较快是因为消息已预填充到 Kafka，真实场景受限于 broker 推送速度。
+
+**总计**: 9个测试, 全部通过, 0失败, 0错误
 
 ## 序列化模式对比
 
@@ -72,8 +78,12 @@
 - [x] Baseline 配置测试
 - [x] Optimized 配置测试
 - [x] EOS 配置测试
+- [x] RAW 高性能模式测试
+- [x] 多线程 Producer 测试
+- [x] 对象池化测试
 - [x] 吞吐量基准测试
 - [x] 消费基准测试
+- [x] 多分区消费测试
 - [x] 结果对比表
 
 ## 数据完整性
@@ -86,15 +96,15 @@
 
 EventBus Kafka 集成测试通过 100K 消息压测验证:
 
-1. **稳定性**: 所有6个基准测试全部通过
+1. **稳定性**: 所有9个基准测试全部通过
 2. **正确性**: 使用 EventBus API (非直接 KafkaClient)
 3. **完整性**: 数据校验确保无损坏消息
-4. **EOS支持**: P0.3 EOS 配置已实现并可正常工作
+4. **EOS支持**: EOS 配置已实现并可正常工作
+5. **多线程**: 4线程 Producer 可达 13K msg/s
 
 ## 后续优化方向
 
-- P1.1: EOS Annotation 实现 (@EventBusListener(exactlyOnce=true))
-- P1.2: Producer Pool 多线程producer
-- P1.3: Consumer Pool 多线程consumer
-- P2.1: Latency Tracker 延迟追踪
-- P2.2: Dead Letter Queue (DLQ)
+- [ ] Consumer 异步 commit 支持
+- [ ] Producer 异步提交优化
+- [ ] Dead Letter Queue (DLQ)
+- [ ] Latency Tracker 延迟追踪

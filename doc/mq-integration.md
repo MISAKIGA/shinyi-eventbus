@@ -175,9 +175,67 @@ public void onJsonEvent(EventModel<MyEvent> event) { }
 
 // Raw message (no deserialization)
 @EventBusListener(name = "kafka", topic = "event.raw", serializeType = "MSG")
-public void onRawEvent(EventModel<?> event) { 
+public void onRawEvent(EventModel<?> event) {
     byte[] rawData = event.getRawData();
 }
+```
+
+### Kafka Kerberos (GSSAPI) Authentication
+
+Shinyi EventBus supports Kerberos authentication for Kafka through the GSSAPI SASL mechanism.
+
+```yaml
+shinyi:
+  eventbus:
+    kafka:
+      connect-configs:
+        kerberos-kafka:
+          is-default: true
+          bootstrap-servers: kafka.example.com:9092
+          topic: my-topic
+          group-id: my-consumer-group
+
+          # Security settings for Kerberos
+          security-protocol: SASL_SSL
+          sasl-mechanism: GSSAPI
+
+          # Kerberos authentication
+          kerberos-service-name: kafka
+          kerberos-principal: kafka/kafka.example.com@EXAMPLE.COM
+          kerberos-keytab: /etc/kafka/kafka.keytab
+          kerberos-krb5-location: /etc/kafka/krb5.conf
+```
+
+#### Configuration Reference
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| security-protocol | String | PLAINTEXT | Security protocol (PLAINTEXT, SASL_PLAINTEXT, SASL_SSL) |
+| sasl-mechanism | String | PLAIN | SASL mechanism (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, GSSAPI) |
+| kerberos-service-name | String | kafka | Kerberos service name |
+| kerberos-principal | String | - | Kerberos principal (e.g., kafka/kafka.example.com@EXAMPLE.COM) |
+| kerberos-keytab | String | - | Path to Kerberos keytab file |
+| kerberos-krb5-location | String | - | Path to krb5.conf file |
+
+#### krb5.conf Example
+
+```ini
+[libdefaults]
+    default_realm = EXAMPLE.COM
+    dns_lookup_realm = false
+    dns_lookup_kdc = false
+    ticket_lifetime = 24h
+    renew_until = 7d
+
+[realms]
+    EXAMPLE.COM = {
+        kdc = kdc.example.com
+        admin_server = kdc.example.com
+    }
+
+[domain_realm]
+    .example.com = EXAMPLE.COM
+    example.com = EXAMPLE.COM
 ```
 
 ## Local Event Bus (Guava/Spring)

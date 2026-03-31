@@ -29,7 +29,7 @@ Add the dependency to your `pom.xml`:
 <dependency>
     <groupId>io.github.misakiga</groupId>
     <artifactId>shinyi-eventbus</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
 </dependency>
 ```
 
@@ -413,10 +413,32 @@ public void onJsonEvent(EventModel<MyEvent> event) { }
 
 // Raw message (no deserialization)
 @EventBusListener(name = "kafka", topic = "event.raw", serializeType = "MSG")
-public void onRawEvent(EventModel<?> event) { 
+public void onRawEvent(EventModel<?> event) {
     byte[] rawData = event.getRawData();
 }
 ```
+
+### Kerberos Authentication
+
+For Kafka clusters using Kerberos authentication:
+
+```yaml
+shinyi:
+  eventbus:
+    kafka:
+      connect-configs:
+        secure-kafka:
+          is-default: true
+          bootstrap-servers: kafka.example.com:9092
+          security-protocol: SASL_SSL
+          sasl-mechanism: GSSAPI
+          kerberos-service-name: kafka
+          kerberos-principal: kafka/kafka.example.com@EXAMPLE.COM
+          kerberos-keytab: /etc/security/kafka/kafka.keytab
+          kerberos-krb5-location: /etc/security/kafka/krb5.conf
+```
+
+The `kerberos-krb5-location` property sets `java.security.krb5.conf` system property for JVM-wide Kerberos configuration.
 
 ---
 

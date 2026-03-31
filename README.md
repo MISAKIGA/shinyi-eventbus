@@ -36,7 +36,7 @@ Build the project and add it to your Spring Boot application's `pom.xml`:
 <dependency>
     <groupId>io.github.misakiga</groupId>
     <artifactId>shinyi-eventbus</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.3</version>
 </dependency>
 ```
 
@@ -232,6 +232,7 @@ For more detailed information, please refer to the documentation in the `doc/` d
 - [Implementation Details](doc/implementation.md)
 - [MQ Integration Guide](doc/mq-integration.md)
 - [Usage Guide](doc/usage-guide.md)
+- [Kafka Benchmark Results](doc/kafka-benchmark.md)
 
 ## License
 

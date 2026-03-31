@@ -1,5 +1,15 @@
 package com.shinyi.eventbus.registry;
 
+/**
+ * @deprecated Use {@link OptimizedKafkaMqEventListenerRegistry} instead.
+ * OptimizedKafkaMqEventListenerRegistry provides better performance through:
+ * - Object pooling (EventResult reuse)
+ * - Disabled hot-path logging
+ * - Pre-computed default topic
+ *
+ * This class is kept for backward compatibility only.
+ */
+
 import cn.hutool.core.collection.CollectionUtil;
 import cn.hutool.core.collection.ConcurrentHashSet;
 import com.shinyi.eventbus.*;
@@ -15,10 +25,12 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
 import org.springframework.context.ApplicationContext;
 
@@ -26,14 +38,17 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 @Slf4j
 @RequiredArgsConstructor
+@Deprecated
 public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements EventListenerRegistry<T> {
 
     protected final ApplicationContext applicationContext;
@@ -45,6 +60,17 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     private final Set<ExecutorService> executorSet = new ConcurrentHashSet<>();
     protected final Serializer serializer = new BaseSerializer();
     private final AtomicBoolean started = new AtomicBoolean(false);
+
+    // EOS: Offset tracking for manual commit
+    private final Map<KafkaConsumer<String, byte[]>, OffsetCommitState> offsetStates = new ConcurrentHashMap<>();
+
+    /**
+     * EOS: Offset tracking state per consumer
+     */
+    private static class OffsetCommitState {
+        Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new ConcurrentHashMap<>();
+        AtomicInteger processedCount = new AtomicInteger(0);
+    }
 
     @Override
     public EventBusType getEventBusType() {
@@ -79,9 +105,15 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     }
 
     private void initConsumer(com.shinyi.eventbus.EventListener<T> listener) {
-        Properties consumerProps = kafkaConnectConfig.toConsumerProperties();
+        // EOS: Get EOS settings - check listener annotation first, fall back to global config
+        final boolean eosEnabled = listener.exactlyOnce() || kafkaConnectConfig.isEnableManualCommit();
+        final int commitBatchSize = listener.commitBatchSize() > 0
+            ? listener.commitBatchSize()
+            : kafkaConnectConfig.getCommitBatchSize();
+
+        Properties consumerProps = kafkaConnectConfig.toConsumerProperties(eosEnabled);
         consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, listener.group());
-        
+
         KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
         consumerSet.add(consumer);
 
@@ -109,6 +141,10 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                                 }
                                 EventModel<?> eventModel = deserialize(record.value(), record.offset() + "", finalListener);
                                 finalListener.onMessage((T) eventModel);
+                                // EOS: Track offset for manual commit after successful processing
+                                if (eosEnabled) {
+                                    trackOffsetAndCommit(consumer, record, commitBatchSize);
+                                }
                             } catch (Exception e) {
                                 log.warn("Message processing failed: " + e.getMessage(), e);
                             }
@@ -118,6 +154,10 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                     }
                 }
             } finally {
+                // EOS: Commit pending offsets before shutdown and cleanup
+                if (eosEnabled) {
+                    commitPendingOffsets(consumer, true);  // true = remove after commit
+                }
                 consumer.close();
             }
         });
@@ -146,6 +186,52 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
             eventModel.setTopic(listener.topic());
         }
         return eventModel;
+    }
+
+    /**
+     * EOS: Track offset and commit when batch size reached
+     */
+    private void trackOffsetAndCommit(KafkaConsumer<String, byte[]> consumer,
+                                     ConsumerRecord<String, byte[]> record,
+                                     int batchSize) {
+        OffsetCommitState state = offsetStates.computeIfAbsent(consumer, k -> new OffsetCommitState());
+
+        TopicPartition tp = new TopicPartition(record.topic(), record.partition());
+        state.pendingOffsets.put(tp, new OffsetAndMetadata(record.offset() + 1));
+        state.processedCount.incrementAndGet();
+
+        // Use processedCount (number of messages) not pendingOffsets.size() (number of partitions)
+        if (state.processedCount.get() >= batchSize) {
+            commitPendingOffsets(consumer);
+        }
+    }
+
+    /**
+     * EOS: Commit pending offsets to Kafka
+     */
+    private void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer) {
+        commitPendingOffsets(consumer, false);
+    }
+
+    /**
+     * EOS: Commit pending offsets to Kafka
+     * @param removeAfterCommit if true, remove the consumer entry from offsetStates after committing
+     */
+    private void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer, boolean removeAfterCommit) {
+        OffsetCommitState state = offsetStates.get(consumer);
+        if (state != null && !state.pendingOffsets.isEmpty()) {
+            try {
+                consumer.commitSync(new HashMap<>(state.pendingOffsets));
+                log.debug("EOS: Committed offsets for {} partitions", state.pendingOffsets.size());
+                state.pendingOffsets.clear();
+                state.processedCount.set(0);
+            } catch (Exception e) {
+                log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
+            }
+        }
+        if (removeAfterCommit) {
+            offsetStates.remove(consumer);
+        }
     }
 
     @Override
@@ -278,6 +364,11 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
 
     @Override
     public void close() throws Exception {
+        // EOS: Commit pending offsets for all consumers before shutdown and cleanup
+        for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
+            commitPendingOffsets(consumer, true);  // true = remove after commit
+        }
+
         for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
             try {
                 consumer.wakeup();
