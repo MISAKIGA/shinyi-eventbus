@@ -257,6 +257,36 @@ public void onEvent(EventModel<?> event) {
 - For high-throughput scenarios, use separate listeners per topic
 - EOS (Exactly-Once Semantics) works correctly across multiple topics
 
+### Consumer Parallel Processing
+
+```yaml
+shinyi:
+  eventbus:
+    kafka:
+      connect-configs:
+        default-kafka:
+          bootstrap-servers: localhost:9092
+          topic: my-topic
+          # Parallel consumer threads (default: auto)
+          # 0 = auto-detect based on partition count and CPU cores
+          # 1 = single-threaded mode (disable parallel)
+          # N = use N threads (capped at partition count)
+          consumer-threads: 0
+          # Auto-detect threads based on partition count (default: true)
+          auto-detect-consumer-threads: true
+```
+
+**Auto-detection logic (balanced strategy):**
+- `partitionCount <= CPU cores`: threads = min(partitionCount, CPU cores)
+- `partitionCount > CPU cores`: threads = min(CPU cores x 4, partitionCount, 32)
+
+**Examples:**
+| Partitions | CPU Cores | consumerThreads=0 (auto) | Result |
+|------------|-----------|------------------------|--------|
+| 10 | 8 | 8 | min(10, 8) |
+| 50 | 2 | 8 | min(2x4=8, 50, 32) |
+| 100 | 4 | 16 | min(4x4=16, 100, 32) |
+
 ## Monitoring and Telemetry
 
 The framework provides built-in monitoring capabilities with configurable reset strategies.

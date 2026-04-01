@@ -258,6 +258,36 @@ public void onEvent(EventModel<?> event) {
 - 高吞吐场景建议为每个 topic 配置独立的 listener
 - EOS（精确一次语义）在多 topic 场景下正常工作
 
+### 消费者并行处理
+
+```yaml
+shinyi:
+  eventbus:
+    kafka:
+      connect-configs:
+        default-kafka:
+          bootstrap-servers: localhost:9092
+          topic: my-topic
+          # 并行消费者线程数（默认：auto）
+          # 0 = 根据分区数和 CPU 核心数自动检测
+          # 1 = 单线程模式（禁用并行）
+          # N = 使用 N 个线程（不超过分区数）
+          consumer-threads: 0
+          # 根据分区数自动检测线程数（默认：true）
+          auto-detect-consumer-threads: true
+```
+
+**自动检测逻辑（平衡策略）：**
+- `分区数 <= CPU 核心数`：threads = min(分区数, CPU 核心数)
+- `分区数 > CPU 核心数`：threads = min(CPU 核心数 x 4, 分区数, 32)
+
+**示例：**
+| 分区数 | CPU 核心数 | consumerThreads=0（自动） | 计算结果 |
+|--------|------------|---------------------------|----------|
+| 10 | 8 | 8 | min(10, 8) |
+| 50 | 2 | 8 | min(2x4=8, 50, 32) |
+| 100 | 4 | 16 | min(4x4=16, 100, 32) |
+
 ## 文档
 
 更多详细信息，请参阅 `doc/` 目录下的文档：
