@@ -20,6 +20,8 @@ public class MetricsCollector implements Runnable {
     private volatile MetricsSnapshot lastSnapshot;
     private volatile long lastCollectTime = System.currentTimeMillis();
     private volatile long lastResetTime = System.currentTimeMillis();
+    private volatile MetricsSnapshot prevSnapshot;
+    private volatile long prevSnapshotTime = System.currentTimeMillis();
 
     public MetricsCollector(Metrics metrics, long intervalMs) {
         this(metrics, intervalMs, true, ResetStrategy.INTERVAL, 86400000);
@@ -112,11 +114,21 @@ public class MetricsCollector implements Runnable {
                 String topic = parts[1];
                 String metric = parts[2];
 
+                // 计算增量（当前值 - 上一次值）
+                long prevValue = 0;
+                if (prevSnapshot != null) {
+                    Long prev = prevSnapshot.getCounters().get(key);
+                    if (prev != null) {
+                        prevValue = prev;
+                    }
+                }
+                long delta = value - prevValue;
+
                 TopicMetrics tm = topicMetrics.computeIfAbsent(topic, k -> new TopicMetrics(topic));
                 if ("events.consumed".equals(metric)) {
-                    tm.consumed = value;
+                    tm.consumed = delta;
                 } else if ("events.published".equals(metric)) {
-                    tm.published = value;
+                    tm.published = delta;
                 }
             }
         });
@@ -163,6 +175,10 @@ public class MetricsCollector implements Runnable {
 
         // 更新上次统计
         lastCollectTime = now;
+
+        // 更新用于下次计算的增量基准
+        prevSnapshot = lastSnapshot;
+        prevSnapshotTime = now;
     }
 
     private static class TopicMetrics {
