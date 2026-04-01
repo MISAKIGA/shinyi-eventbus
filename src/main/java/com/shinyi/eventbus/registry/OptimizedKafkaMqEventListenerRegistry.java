@@ -581,7 +581,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                 } finally {
                     // EOS: Commit pending offsets before shutdown and cleanup
                     if (eosEnabled) {
-                        eosManager.commitPendingOffsets(consumer, true);  // true = remove after commit
+                        eosManager.commitAllPending(consumer);
                     }
                     consumer.close();
                 }
@@ -610,7 +610,8 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                 listener.onMessage((T) eventModel);
                 // EOS: Track offset
                 if (eosEnabled) {
-                    eosManager.trackOffsetAndCommit(consumer, record, commitBatchSize);
+                    TopicPartition tp = new TopicPartition(record.topic(), record.partition());
+                    eosManager.trackOffsetAndCommit(consumer, tp, record.offset(), commitBatchSize);
                 }
                 // Record metrics
                 MetricsHolder.increment(registryBeanName, record.topic(), "events.consumed", 1);
@@ -625,7 +626,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         void shutdown(EosOffsetManager eosManager, boolean performanceMode) {
             // EOS: Commit pending offsets for all consumers before shutdown and cleanup
             for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
-                eosManager.commitPendingOffsets(consumer, true);  // true = remove after commit
+                eosManager.commitAllPending(consumer);
             }
 
             for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
@@ -650,95 +651,98 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
      * 处理EOS语义下的offset提交
      */
     private class EosOffsetManager {
-        private final Map<KafkaConsumer<String, byte[]>, OffsetCommitState> offsetStates = new ConcurrentHashMap<>();
-        private final Object commitLock = new Object();
+        private final Map<TopicPartition, PartitionCommitState> partitionStates = new ConcurrentHashMap<>();
 
         /**
-         * EOS: Track offset and commit when batch size reached
+         * 分区级 EOS 状态 - Flink 风格分区本地处理
+         * 每个分区独立维护自己的 offset 状态，无跨分区协调
+         */
+        private class PartitionCommitState {
+            volatile long pendingOffset = -1;
+            AtomicInteger processedCount = new AtomicInteger(0);
+            AtomicBoolean committing = new AtomicBoolean(false);
+
+            void track(long offset) {
+                this.pendingOffset = offset + 1;
+                this.processedCount.incrementAndGet();
+            }
+
+            boolean shouldCommit(int batchSize) {
+                return processedCount.get() >= batchSize && !committing.get();
+            }
+
+            boolean tryBeginCommit() {
+                return committing.compareAndSet(false, true);
+            }
+
+            void resetAfterCommit() {
+                processedCount.set(0);
+                committing.set(false);
+            }
+        }
+
+        /**
+         * 分区本地 EOS 跟踪 - Flink 风格
          */
         void trackOffsetAndCommit(KafkaConsumer<String, byte[]> consumer,
-                                  ConsumerRecord<String, byte[]> record,
-                                  int batchSize) {
-            OffsetCommitState state = offsetStates.computeIfAbsent(consumer, k -> new OffsetCommitState());
+                                 TopicPartition tp,
+                                 long offset,
+                                 int batchSize) {
+            PartitionCommitState state = partitionStates.computeIfAbsent(tp, k -> new PartitionCommitState());
+            state.track(offset);
 
-            TopicPartition tp = new TopicPartition(record.topic(), record.partition());
-            state.pendingOffsets.put(tp, new OffsetAndMetadata(record.offset() + 1));
-            int count = state.processedCount.incrementAndGet();
-
-            if (count >= batchSize) {
-                synchronized (commitLock) {
-                    if (state.processedCount.get() >= batchSize) {
-                        commitPendingOffsetsInternal(consumer, state);
-                    }
-                }
-            }
-        }
-
-        /**
-         * EOS: Commit pending offsets to Kafka
-         */
-        void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer) {
-            commitPendingOffsets(consumer, false);
-        }
-
-        /**
-         * EOS: Internal commit method - caller must hold commitLock
-         */
-        private void commitPendingOffsetsInternal(KafkaConsumer<String, byte[]> consumer, OffsetCommitState state) {
-            if (state != null && !state.pendingOffsets.isEmpty()) {
-                try {
-                    consumer.commitSync(new HashMap<>(state.pendingOffsets));
-                    if (!performanceMode) {
-                        log.debug("EOS: Committed offsets for {} partitions", state.pendingOffsets.size());
-                    }
-                    state.pendingOffsets.clear();
-                    state.processedCount.set(0);
-                } catch (Exception e) {
-                    if (!performanceMode) {
-                        log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
-                    }
-                }
-            }
-        }
-
-        /**
-         * EOS: Commit pending offsets to Kafka
-         * @param removeAfterCommit if true, remove the consumer entry from offsetStates after committing
-         */
-        void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer, boolean removeAfterCommit) {
-            synchronized (commitLock) {
-                OffsetCommitState state = offsetStates.get(consumer);
-                if (state != null && !state.pendingOffsets.isEmpty()) {
+            if (state.shouldCommit(batchSize)) {
+                if (state.tryBeginCommit()) {
                     try {
-                        consumer.commitSync(new HashMap<>(state.pendingOffsets));
-                        if (!performanceMode) {
-                            log.debug("EOS: Committed offsets for {} partitions", state.pendingOffsets.size());
-                        }
-                        state.pendingOffsets.clear();
-                        state.processedCount.set(0);
+                        commitPartition(consumer, tp, state);
                     } catch (Exception e) {
                         if (!performanceMode) {
-                            log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
+                            log.error("EOS: Failed to commit offset for partition {}: {}", tp, e.getMessage());
                         }
+                        state.committing.set(false);
                     }
                 }
-                if (removeAfterCommit) {
-                    offsetStates.remove(consumer);
+            }
+        }
+
+        /**
+         * 提交单个分区的 offset
+         */
+        private void commitPartition(KafkaConsumer<String, byte[]> consumer,
+                                   TopicPartition tp,
+                                   PartitionCommitState state) {
+            try {
+                long offsetToCommit = state.pendingOffset;
+                if (offsetToCommit >= 0) {
+                    consumer.commitSync(Collections.singletonMap(tp, new OffsetAndMetadata(offsetToCommit)));
+                    if (!performanceMode) {
+                        log.debug("EOS: Committed offset {} for partition {}", offsetToCommit, tp);
+                    }
+                }
+            } finally {
+                state.resetAfterCommit();
+            }
+        }
+
+        /**
+         * 提交所有待提交的分区（仅在 shutdown 时调用）
+         */
+        void commitAllPending(KafkaConsumer<String, byte[]> consumer) {
+            for (Map.Entry<TopicPartition, PartitionCommitState> entry : partitionStates.entrySet()) {
+                TopicPartition tp = entry.getKey();
+                PartitionCommitState state = entry.getValue();
+                if (state.pendingOffset >= 0) {
+                    try {
+                        commitPartition(consumer, tp, state);
+                    } catch (Exception e) {
+                        if (!performanceMode) {
+                            log.error("EOS: Failed to commit pending offset for partition {}: {}", tp, e.getMessage());
+                        }
+                    }
                 }
             }
         }
     }
-
-    // ==================== OffsetCommitState ====================
-
-    /**
-     * EOS: Offset tracking state per consumer
-     */
-    private static class OffsetCommitState {
-        Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new ConcurrentHashMap<>();
-        AtomicInteger processedCount = new AtomicInteger(0);
-    }
-
     // ==================== Functional Interface ====================
 
     @FunctionalInterface
