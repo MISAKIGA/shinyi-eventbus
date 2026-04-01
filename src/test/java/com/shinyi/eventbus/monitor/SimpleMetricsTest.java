@@ -3,6 +3,10 @@ package com.shinyi.eventbus.monitor;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -176,5 +180,31 @@ public class SimpleMetricsTest {
         metrics.reset();
         long total = metrics.getTotalCount("kafka", "topic1", "events.consumed");
         assertEquals(100, total);
+    }
+
+    @Test
+    public void testConcurrentIncrements() throws Exception {
+        SimpleMetrics metrics = new SimpleMetrics();
+        int threadCount = 10;
+        int incrementsPerThread = 10000;
+        long expectedTotal = (long) threadCount * incrementsPerThread;
+
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch latch = new CountDownLatch(threadCount);
+
+        for (int t = 0; t < threadCount; t++) {
+            executor.submit(() -> {
+                for (int i = 0; i < incrementsPerThread; i++) {
+                    metrics.increment("kafka", "topic1", "events.consumed", 1);
+                }
+                latch.countDown();
+            });
+        }
+
+        latch.await(10, TimeUnit.SECONDS);
+        executor.shutdown();
+
+        long total = metrics.getTotalCount("kafka", "topic1", "events.consumed");
+        assertEquals(expectedTotal, total, "Concurrent increments should produce correct total");
     }
 }

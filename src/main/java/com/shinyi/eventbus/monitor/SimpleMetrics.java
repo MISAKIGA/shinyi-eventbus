@@ -25,38 +25,23 @@ public class SimpleMetrics implements Metrics {
 
     @Override
     public void increment(String bus, String topic, String name, long delta) {
-        rwLock.readLock().lock();
-        try {
-            String key = key(bus, topic, name);
-            counters.computeIfAbsent(key, k -> new LongAdder()).add(delta);
-            totalCounters.computeIfAbsent(key, k -> new AtomicLong()).addAndGet(delta);
-        } finally {
-            rwLock.readLock().unlock();
-        }
+        String key = key(bus, topic, name);
+        counters.computeIfAbsent(key, k -> new LongAdder()).add(delta);
+        totalCounters.computeIfAbsent(key, k -> new AtomicLong()).addAndGet(delta);
     }
 
     @Override
     public void gauge(String bus, String topic, String name, long value) {
-        rwLock.readLock().lock();
-        try {
-            String key = key(bus, topic, name);
-            gauges.computeIfAbsent(key, k -> new AtomicLong()).set(value);
-        } finally {
-            rwLock.readLock().unlock();
-        }
+        String key = key(bus, topic, name);
+        gauges.computeIfAbsent(key, k -> new AtomicLong()).set(value);
     }
 
     @Override
     public void recordLatency(String bus, String topic, long latencyMs) {
-        rwLock.readLock().lock();
-        try {
-            String key = key(bus, topic, "latency");
-            histograms.computeIfAbsent(key, k -> new LightweightHistogram()).record(latencyMs);
-            cumulativeLatencySum.computeIfAbsent(key, k -> new AtomicLong()).addAndGet(latencyMs);
-            cumulativeLatencyCounters.computeIfAbsent(key, k -> new AtomicLong()).incrementAndGet();
-        } finally {
-            rwLock.readLock().unlock();
-        }
+        String key = key(bus, topic, "latency");
+        histograms.computeIfAbsent(key, k -> new LightweightHistogram()).record(latencyMs);
+        cumulativeLatencySum.computeIfAbsent(key, k -> new AtomicLong()).addAndGet(latencyMs);
+        cumulativeLatencyCounters.computeIfAbsent(key, k -> new AtomicLong()).incrementAndGet();
     }
 
     @Override
