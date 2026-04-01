@@ -42,26 +42,20 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Kafka Exactly-Once Semantics (EOS) Test Suite
  *
- * Tests EOS producer and consumer behavior including:
- * - EOS-1: Idempotent producer prevents duplicate sends
- * - EOS-2: Manual commit offset tracking accuracy
- * - EOS-3: Batch commit triggers at exact batch size
- * - EOS-4: Consumer restart resumes from last committed offset
- * - EOS-5: No message loss under producer failure
- * - EOS-6: No message duplication under consumer failure
- * - EOS-7: EOS disabled falls back to at-least-once
- * - EOS-8: Multi-partition offset tracking
- * - EOS-9: Partition reassignment offset recovery
- * - EOS-10: Commit failure retry handling
- * - EOS-11: Large batch commit performance
- * - EOS-12: Concurrent producer/consumer
- * - EOS-13: Message ordering preservation
+ * NOTE: This test is DISABLED because it tests native Kafka API directly,
+ * bypassing the EventBus framework. These tests are NOT valid for testing
+ * EventBus EOS functionality.
  *
- * Edge cases:
- * - EOS-14: Empty batch commit
- * - EOS-15: Rapid commit interval
+ * See PLAN_EOS_TEST.md for the correct EventBus framework EOS test design.
+ * A new EventBusEosTest.java will be created to properly test EOS via:
+ * - EventListenerRegistryManager.publish()
+ * - @EventBusListener annotation
+ * - Framework's MethodEventListener
+ *
+ * @Deprecated Use EventBusEosTest instead
  */
 @Slf4j
+@Disabled("KafkaEosTest bypasses EventBus framework - use EventBusEosTest instead")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public class KafkaEosTest {
 

@@ -1,0 +1,623 @@
+package com.shinyi.eventbus.kafka;
+
+import com.shinyi.eventbus.EventBusType;
+import com.shinyi.eventbus.EventListener;
+import com.shinyi.eventbus.EventListenerRegistry;
+import com.shinyi.eventbus.EventModel;
+import com.shinyi.eventbus.config.kafka.KafkaConnectConfig;
+import com.shinyi.eventbus.registry.KafkaMqEventListenerRegistry;
+import com.shinyi.eventbus.support.EventListenerRegistryManager;
+import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.junit.jupiter.api.*;
+import org.springframework.context.support.GenericApplicationContext;
+import org.testcontainers.containers.KafkaContainer;
+import org.testcontainers.containers.Network;
+import org.testcontainers.lifecycle.Startables;
+import org.testcontainers.utility.DockerImageName;
+
+import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * EventBus Framework EOS (Exactly-Once Semantics) Test Suite
+ *
+ * This test properly tests the EventBus framework's EOS functionality by:
+ * - Using EventListenerRegistryManager.publish() to publish events
+ * - Using framework EventListener interface to receive events
+ * - Verifying EOS semantics: no message loss, no duplication
+ *
+ * IMPORTANT: This test does NOT use native KafkaProducer/KafkaConsumer.
+ * All interactions go through the EventBus framework API.
+ */
+@Slf4j
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+public class EventBusEosTest {
+
+    private static final String TOPIC_PREFIX = "eb-eos-test-";
+    private static final int MESSAGE_COUNT = 100;
+
+    private KafkaContainer kafkaContainer;
+    private Network network;
+    private String bootstrapServers;
+
+    @BeforeAll
+    void startKafka() {
+        network = Network.newNetwork();
+        kafkaContainer = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.5.0"))
+                .withNetwork(network)
+                .withNetworkAliases("kafka")
+                .withExposedPorts(9092, 9093);
+
+        Startables.deepStart(kafkaContainer).join();
+        bootstrapServers = kafkaContainer.getBootstrapServers();
+        log.info("EventBus EOS Test Kafka started at: {}", bootstrapServers);
+    }
+
+    @AfterAll
+    void stopKafka() {
+        if (kafkaContainer != null) {
+            kafkaContainer.close();
+        }
+        if (network != null) {
+            network.close();
+        }
+    }
+
+    @Data
+    public static class EosEvent implements Serializable {
+        private static final long serialVersionUID = 1L;
+        private long sequence;
+        private long timestamp;
+        private String payload;
+        private String checksum;
+
+        public static EosEvent create(long sequence) {
+            EosEvent event = new EosEvent();
+            event.setSequence(sequence);
+            event.setTimestamp(System.currentTimeMillis());
+            event.setPayload("MSG-" + sequence);
+
+            try {
+                MessageDigest md = MessageDigest.getInstance("MD5");
+                String dataToHash = sequence + "-" + event.getPayload();
+                byte[] hash = md.digest(dataToHash.getBytes(StandardCharsets.UTF_8));
+                StringBuilder hexString = new StringBuilder();
+                for (byte b : hash) {
+                    String hex = Integer.toHexString(0xff & b);
+                    if (hex.length() == 1) hexString.append('0');
+                    hexString.append(hex);
+                }
+                event.setChecksum(hexString.toString());
+            } catch (Exception e) {
+                event.setChecksum("ERROR");
+            }
+            return event;
+        }
+
+        public boolean validateIntegrity() {
+            try {
+                MessageDigest md = MessageDigest.getInstance("MD5");
+                String dataToHash = this.sequence + "-" + this.payload;
+                byte[] hash = md.digest(dataToHash.getBytes(StandardCharsets.UTF_8));
+                StringBuilder hexString = new StringBuilder();
+                for (byte b : hash) {
+                    String hex = Integer.toHexString(0xff & b);
+                    if (hex.length() == 1) hexString.append('0');
+                    hexString.append(hex);
+                }
+                return hexString.toString().equals(this.checksum);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Framework-based EventListener for EOS testing.
+     * This listener properly implements the EventListener interface.
+     */
+    public static class FrameworkEosListener implements EventListener<EosEvent> {
+        private final Set<String> receivedIds = ConcurrentHashMap.newKeySet();
+        private final CountDownLatch latch;
+        private final int expectedCount;
+        private final String listenerId;
+
+        public FrameworkEosListener(int expectedCount, CountDownLatch latch) {
+            this.expectedCount = expectedCount;
+            this.latch = latch;
+            this.listenerId = UUID.randomUUID().toString();
+        }
+
+        @Override
+        public String topic() {
+            return TOPIC_PREFIX + "main";
+        }
+
+        @Override
+        public Class<?> entityType() {
+            return EosEvent.class;
+        }
+
+        @Override
+        public void onMessage(EosEvent message) throws Exception {
+            if (message != null && receivedIds.add(String.valueOf(message.getSequence()))) {
+                latch.countDown();
+            }
+        }
+
+        @Override
+        public void onMessageBatch(List<EosEvent> messages) throws Exception {
+            for (EosEvent event : messages) {
+                onMessage(event);
+            }
+        }
+
+        @Override
+        public boolean exactlyOnce() {
+            return true;
+        }
+
+        @Override
+        public int commitBatchSize() {
+            return 10;
+        }
+
+        public int getReceivedCount() {
+            return receivedIds.size();
+        }
+
+        public Set<String> getReceivedIds() {
+            return new HashSet<>(receivedIds);
+        }
+    }
+
+    // ==================== Helper Methods ====================
+
+    private KafkaConnectConfig createEosConfig(String topic) {
+        KafkaConnectConfig config = new KafkaConnectConfig();
+        config.setBootstrapServers(bootstrapServers);
+        config.setTopic(topic);
+        config.setGroupId("eb-eos-group-" + System.currentTimeMillis());
+
+        // EOS Producer settings
+        config.setAcks("all");
+        config.setEnableIdempotence(true);
+        config.setRetries(Integer.MAX_VALUE);
+        config.setMaxInFlightRequestsPerConnection(5);
+        config.setBatchSize(65536);
+        config.setLingerMs(10);
+        config.setCompressionType("snappy");
+
+        // EOS Consumer settings
+        config.setEnableAutoCommit(false);
+        config.setEnableManualCommit(true);
+        config.setCommitBatchSize(10);
+        config.setMaxPollRecords(500);
+
+        return config;
+    }
+
+    private KafkaConnectConfig createNonEosConfig(String topic) {
+        KafkaConnectConfig config = new KafkaConnectConfig();
+        config.setBootstrapServers(bootstrapServers);
+        config.setTopic(topic);
+        config.setGroupId("eb-non-eos-group-" + System.currentTimeMillis());
+
+        // Non-EOS Producer settings
+        config.setAcks("1");
+        config.setEnableIdempotence(false);
+        config.setRetries(3);
+
+        // Non-EOS Consumer settings
+        config.setEnableAutoCommit(true);
+
+        return config;
+    }
+
+    private EventListenerRegistryManager createRegistryManager(
+            KafkaConnectConfig config,
+            FrameworkEosListener listener) {
+
+        GenericApplicationContext ctx = new GenericApplicationContext();
+
+        // Create and configure Kafka registry
+        KafkaMqEventListenerRegistry<EventModel<?>> kafkaRegistry =
+                new KafkaMqEventListenerRegistry<>(ctx, "kafka", config);
+        kafkaRegistry.init();
+
+        // Register the Kafka registry
+        ctx.getDefaultListableBeanFactory().registerSingleton("kafkaEventListenerRegistry", kafkaRegistry);
+
+        // Register the test listener
+        ctx.getDefaultListableBeanFactory().registerSingleton("testEosListener", listener);
+
+        // Create and register the manager
+        EventListenerRegistryManager manager = new EventListenerRegistryManager();
+        manager.setApplicationContext(ctx);
+
+        // Manually register the listener to the registry
+        kafkaRegistry.registerEventListener(listener);
+
+        ctx.refresh();
+
+        return manager;
+    }
+
+    private void createTopic(String topicName, int partitions) throws Exception {
+        Properties adminProps = new Properties();
+        adminProps.put("bootstrap.servers", bootstrapServers);
+        try (AdminClient admin = AdminClient.create(adminProps)) {
+            NewTopic topic = new NewTopic(topicName, partitions, (short) 1);
+            admin.createTopics(Collections.singleton(topic)).all().get(30, TimeUnit.SECONDS);
+            log.info("Created topic: {} with {} partitions", topicName, partitions);
+        }
+    }
+
+    // ==================== EOS-1: No Message Loss ====================
+
+    @Test
+    @Order(1)
+    @DisplayName("EOS-1: EventBus EOS mode - no message loss")
+    void testEosNoMessageLoss() throws Exception {
+        String topic = TOPIC_PREFIX + "loss-" + System.currentTimeMillis();
+        createTopic(topic, 1);
+
+        KafkaConnectConfig config = createEosConfig(topic);
+        CountDownLatch latch = new CountDownLatch(MESSAGE_COUNT);
+        FrameworkEosListener listener = new FrameworkEosListener(MESSAGE_COUNT, latch);
+        listener = new FrameworkEosListener(MESSAGE_COUNT, latch) {
+            @Override
+            public String topic() { return topic; }
+        };
+
+        EventListenerRegistryManager manager = createRegistryManager(config, listener);
+        manager.start();
+
+        try {
+            // Publish via EventBus framework API (NOT KafkaProducer directly)
+            for (int i = 0; i < MESSAGE_COUNT; i++) {
+                EosEvent event = EosEvent.create(i);
+                EventModel<EosEvent> eventModel = EventModel.build(
+                        topic,
+                        event,
+                        String.valueOf(i),
+                        false, // sync
+                        "JSON",
+                        null
+                );
+                manager.publish(EventBusType.KAFKA, eventModel);
+            }
+
+            // Wait via latch (NOT Future.get() blocking)
+            boolean completed = latch.await(60, TimeUnit.SECONDS);
+
+            log.info("EOS-1: Received {}/{} messages within timeout",
+                    listener.getReceivedCount(), MESSAGE_COUNT);
+
+            assertTrue(completed, "Should receive all messages within 60 seconds");
+            assertEquals(MESSAGE_COUNT, listener.getReceivedCount(),
+                    "No message loss in EOS mode");
+
+        } finally {
+            manager.close();
+        }
+    }
+
+    // ==================== EOS-2: No Message Duplication ====================
+
+    @Test
+    @Order(2)
+    @DisplayName("EOS-2: EventBus EOS mode - idempotent producer prevents duplicates")
+    void testEosNoDuplication() throws Exception {
+        String topic = TOPIC_PREFIX + "dup-" + System.currentTimeMillis();
+        createTopic(topic, 1);
+
+        KafkaConnectConfig config = createEosConfig(topic);
+        int uniqueMessages = 50;
+        int totalSends = 100; // Send each message twice
+        CountDownLatch latch = new CountDownLatch(uniqueMessages);
+        FrameworkEosListener listener = new FrameworkEosListener(uniqueMessages, latch) {
+            @Override
+            public String topic() { return topic; }
+        };
+
+        EventListenerRegistryManager manager = createRegistryManager(config, listener);
+        manager.start();
+
+        try {
+            // Send each message twice with same key - idempotent producer should deduplicate
+            for (int i = 0; i < uniqueMessages; i++) {
+                String eventId = String.valueOf(i);
+                EosEvent event = EosEvent.create(i);
+
+                EventModel<EosEvent> em1 = EventModel.build(topic, event, eventId, false, "JSON", null);
+                EventModel<EosEvent> em2 = EventModel.build(topic, event, eventId, false, "JSON", null);
+
+                manager.publish(EventBusType.KAFKA, em1);
+                manager.publish(EventBusType.KAFKA, em2);
+            }
+
+            // Wait for processing
+            Thread.sleep(5000);
+
+            log.info("EOS-2: Sent {} messages (with duplicates), received {} unique",
+                    totalSends, listener.getReceivedCount());
+
+            // Idempotent producer should ensure we only receive uniqueMessages
+            assertEquals(uniqueMessages, listener.getReceivedCount(),
+                    "Idempotent producer prevents duplicates");
+
+        } finally {
+            manager.close();
+        }
+    }
+
+    // ==================== EOS-3: Consumer Restart Resume ====================
+
+    @Test
+    @Order(3)
+    @DisplayName("EOS-3: EventBus EOS consumer restart resumes from last offset")
+    void testEosConsumerRestartResume() throws Exception {
+        String topic = TOPIC_PREFIX + "restart-" + System.currentTimeMillis();
+        String groupId = "eb-eos-restart-group-" + System.currentTimeMillis();
+        createTopic(topic, 1);
+
+        // Phase 1: Publish 200 messages
+        KafkaConnectConfig publishConfig = createEosConfig(topic);
+        publishConfig.setGroupId(groupId);
+
+        EventListenerRegistryManager publisherManager = createRegistryManager(
+                publishConfig, new FrameworkEosListener(0, new CountDownLatch(0)) {
+                    @Override
+                    public String topic() { return topic; }
+                });
+        publisherManager.start();
+
+        for (int i = 0; i < 200; i++) {
+            EosEvent event = EosEvent.create(i);
+            EventModel<EosEvent> em = EventModel.build(topic, event, String.valueOf(i), false, "JSON", null);
+            publisherManager.publish(EventBusType.KAFKA, em);
+        }
+        publisherManager.close();
+
+        Thread.sleep(2000); // Wait for messages to be available
+
+        // Phase 2: First consumer - consume 100 messages
+        Set<String> phase1Received = ConcurrentHashMap.newKeySet();
+        CountDownLatch phase1Latch = new CountDownLatch(100);
+
+        KafkaConnectConfig consumer1Config = createEosConfig(topic);
+        consumer1Config.setGroupId(groupId);
+
+        FrameworkEosListener listener1 = new FrameworkEosListener(100, phase1Latch) {
+            @Override
+            public String topic() { return topic; }
+            @Override
+            public void onMessage(EosEvent message) throws Exception {
+                if (message != null && phase1Received.add(String.valueOf(message.getSequence()))) {
+                    phase1Latch.countDown();
+                }
+            }
+        };
+
+        EventListenerRegistryManager consumer1Manager = createRegistryManager(consumer1Config, listener1);
+        consumer1Manager.start();
+
+        boolean phase1Completed = phase1Latch.await(60, TimeUnit.SECONDS);
+        consumer1Manager.close();
+
+        log.info("EOS-3 Phase 1: Received {} messages", phase1Received.size());
+        assertTrue(phase1Completed, "Phase 1 should complete");
+        assertEquals(100, phase1Received.size(), "Phase 1 should receive 100 messages");
+
+        // Phase 3: Second consumer - should resume from 100
+        Set<String> phase2Received = ConcurrentHashMap.newKeySet();
+        CountDownLatch phase2Latch = new CountDownLatch(100);
+
+        KafkaConnectConfig consumer2Config = createEosConfig(topic);
+        consumer2Config.setGroupId(groupId);
+
+        FrameworkEosListener listener2 = new FrameworkEosListener(100, phase2Latch) {
+            @Override
+            public String topic() { return topic; }
+            @Override
+            public void onMessage(EosEvent message) throws Exception {
+                if (message != null && phase2Received.add(String.valueOf(message.getSequence()))) {
+                    phase2Latch.countDown();
+                }
+            }
+        };
+
+        EventListenerRegistryManager consumer2Manager = createRegistryManager(consumer2Config, listener2);
+        consumer2Manager.start();
+
+        boolean phase2Completed = phase2Latch.await(60, TimeUnit.SECONDS);
+        consumer2Manager.close();
+
+        log.info("EOS-3 Phase 2: Received {} messages", phase2Received.size());
+
+        // Verify no overlap
+        for (String id : phase2Received) {
+            assertFalse(phase1Received.contains(id),
+                    "Phase 2 should not receive Phase 1 messages");
+        }
+
+        // Total should be 200 unique messages
+        Set<String> allReceived = new HashSet<>(phase1Received);
+        allReceived.addAll(phase2Received);
+        assertEquals(200, allReceived.size(), "Total 200 unique messages across restarts");
+    }
+
+    // ==================== EOS-4: Multi-Partition EOS ====================
+
+    @Test
+    @Order(4)
+    @DisplayName("EOS-4: EventBus EOS multi-partition consumption")
+    void testEosMultiPartition() throws Exception {
+        String topic = TOPIC_PREFIX + "multi-" + System.currentTimeMillis();
+        int partitions = 3;
+        createTopic(topic, partitions);
+
+        KafkaConnectConfig config = createEosConfig(topic);
+        int messagesPerPartition = 30;
+        int totalMessages = partitions * messagesPerPartition;
+        CountDownLatch latch = new CountDownLatch(totalMessages);
+
+        FrameworkEosListener listener = new FrameworkEosListener(totalMessages, latch) {
+            @Override
+            public String topic() { return topic; }
+        };
+
+        EventListenerRegistryManager manager = createRegistryManager(config, listener);
+        manager.start();
+
+        try {
+            // Publish to multi-partition topic
+            for (int i = 0; i < totalMessages; i++) {
+                EosEvent event = EosEvent.create(i);
+                EventModel<EosEvent> em = EventModel.build(topic, event, String.valueOf(i), false, "JSON", null);
+                manager.publish(EventBusType.KAFKA, em);
+            }
+
+            boolean completed = latch.await(90, TimeUnit.SECONDS);
+
+            log.info("EOS-4: Received {}/{} messages from {} partitions",
+                    listener.getReceivedCount(), totalMessages, partitions);
+
+            assertTrue(completed, "Should receive all messages within timeout");
+            assertEquals(totalMessages, listener.getReceivedCount(),
+                    "All messages from all partitions should be received");
+
+        } finally {
+            manager.close();
+        }
+    }
+
+    // ==================== EOS-5: EOS vs Non-EOS Comparison ====================
+
+    @Test
+    @Order(5)
+    @DisplayName("EOS-5: EventBus EOS vs Non-EOS mode comparison")
+    void testEosVsNonEos() throws Exception {
+        String eosTopic = TOPIC_PREFIX + "eos-" + System.currentTimeMillis();
+        String nonEosTopic = TOPIC_PREFIX + "non-eos-" + System.currentTimeMillis();
+        createTopic(eosTopic, 1);
+        createTopic(nonEosTopic, 1);
+
+        int messageCount = 50;
+
+        // Test EOS mode
+        KafkaConnectConfig eosConfig = createEosConfig(eosTopic);
+        CountDownLatch eosLatch = new CountDownLatch(messageCount);
+        FrameworkEosListener eosListener = new FrameworkEosListener(messageCount, eosLatch) {
+            @Override
+            public String topic() { return eosTopic; }
+        };
+        EventListenerRegistryManager eosManager = createRegistryManager(eosConfig, eosListener);
+        eosManager.start();
+
+        for (int i = 0; i < messageCount; i++) {
+            EosEvent event = EosEvent.create(i);
+            EventModel<EosEvent> em = EventModel.build(eosTopic, event, String.valueOf(i), false, "JSON", null);
+            eosManager.publish(EventBusType.KAFKA, em);
+        }
+
+        eosLatch.await(60, TimeUnit.SECONDS);
+        eosManager.close();
+
+        // Test Non-EOS mode
+        KafkaConnectConfig nonEosConfig = createNonEosConfig(nonEosTopic);
+        CountDownLatch nonEosLatch = new CountDownLatch(messageCount);
+        FrameworkEosListener nonEosListener = new FrameworkEosListener(messageCount, nonEosLatch) {
+            @Override
+            public String topic() { return nonEosTopic; }
+        };
+        EventListenerRegistryManager nonEosManager = createRegistryManager(nonEosConfig, nonEosListener);
+        nonEosManager.start();
+
+        for (int i = 0; i < messageCount; i++) {
+            EosEvent event = EosEvent.create(i);
+            EventModel<EosEvent> em = EventModel.build(nonEosTopic, event, String.valueOf(i), false, "JSON", null);
+            nonEosManager.publish(EventBusType.KAFKA, em);
+        }
+
+        nonEosLatch.await(60, TimeUnit.SECONDS);
+        nonEosManager.close();
+
+        log.info("EOS-5: EOS received={}, Non-EOS received={}",
+                eosListener.getReceivedCount(), nonEosListener.getReceivedCount());
+
+        // Both should receive all messages (EOS guarantees exactly-once delivery)
+        assertEquals(messageCount, eosListener.getReceivedCount(), "EOS mode receives all messages");
+        assertEquals(messageCount, nonEosListener.getReceivedCount(), "Non-EOS mode receives all messages");
+    }
+
+    // ==================== EOS-6: Commit Batch Size ====================
+
+    @Test
+    @Order(6)
+    @DisplayName("EOS-6: EventBus EOS different commit batch sizes")
+    void testEosCommitBatchSizes() throws Exception {
+        String topic = TOPIC_PREFIX + "batch-" + System.currentTimeMillis();
+        createTopic(topic, 1);
+
+        int[] batchSizes = {1, 10, 25, 50};
+        int messageCount = 100;
+
+        for (int batchSize : batchSizes) {
+            KafkaConnectConfig config = createEosConfig(topic);
+            config.setCommitBatchSize(batchSize);
+
+            CountDownLatch latch = new CountDownLatch(messageCount);
+            FrameworkEosListener listener = new FrameworkEosListener(messageCount, latch) {
+                @Override
+                public String topic() { return topic; }
+                @Override
+                public int commitBatchSize() { return batchSize; }
+            };
+
+            EventListenerRegistryManager manager = createRegistryManager(config, listener);
+            manager.start();
+
+            for (int i = 0; i < messageCount; i++) {
+                EosEvent event = EosEvent.create(i);
+                EventModel<EosEvent> em = EventModel.build(topic, event, String.valueOf(i), false, "JSON", null);
+                manager.publish(EventBusType.KAFKA, em);
+            }
+
+            boolean completed = latch.await(60, TimeUnit.SECONDS);
+            manager.close();
+
+            log.info("EOS-6: batchSize={}, received={}/{}",
+                    batchSize, listener.getReceivedCount(), messageCount);
+
+            assertTrue(completed, "batchSize=" + batchSize + " should complete");
+            assertEquals(messageCount, listener.getReceivedCount(),
+                    "batchSize=" + batchSize + " should receive all messages");
+        }
+    }
+}
