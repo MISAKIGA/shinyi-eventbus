@@ -224,6 +224,39 @@ shinyi:
           value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
 ```
 
+### Multi-Topic Subscription
+
+Kafka supports subscribing to multiple topics using comma-separated strings.
+
+**Configuration:**
+```yaml
+shinyi:
+  eventbus:
+    kafka:
+      connect-configs:
+        my-kafka:
+          # Comma-separated topics
+          topic: "orders,payments,notifications"
+```
+
+**Annotation:**
+```java
+@EventBusListener(
+    name = "kafka",
+    topic = "orders,payments,notifications",
+    group = "my-consumer-group"
+)
+public void onEvent(EventModel<?> event) {
+    // Handles messages from all three topics
+    // Use event.getTopic() to distinguish source
+}
+```
+
+**Notes:**
+- All topics share the same consumer thread (single-threaded processing)
+- For high-throughput scenarios, use separate listeners per topic
+- EOS (Exactly-Once Semantics) works correctly across multiple topics
+
 ## Monitoring and Telemetry
 
 The framework provides built-in monitoring capabilities with configurable reset strategies.
