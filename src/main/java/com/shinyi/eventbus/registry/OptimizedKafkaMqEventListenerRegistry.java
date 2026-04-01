@@ -614,22 +614,28 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         }
 
         void shutdown(EosOffsetManager eosManager, boolean performanceMode) {
-            // EOS: Commit pending offsets for all consumers before shutdown and cleanup
-            for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
-                eosManager.commitAllPending(consumer);
-            }
-
+            // 1. 先唤醒所有 consumer（中断 poll()）
             for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
                 try {
                     consumer.wakeup();
                 } catch (Throwable ignored) {
                 }
             }
+
+            // 2. 关闭线程池
             for (ExecutorService executor : executorSet) {
                 try {
                     executor.shutdownNow();
                 } catch (Throwable ignored) {
                 }
+            }
+
+            // 3. EOS: 提交所有待提交的分区 offset
+            for (KafkaConsumer<String, byte[]> consumer : consumerSet) {
+                if (eosManager != null) {
+                    eosManager.commitAllPending(consumer);
+                }
+                consumer.close();
             }
         }
     }
