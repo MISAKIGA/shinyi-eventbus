@@ -10,6 +10,7 @@ import com.shinyi.eventbus.exception.EventBusException;
 import com.shinyi.eventbus.exception.EventBusExceptionType;
 import com.shinyi.eventbus.serialize.BaseSerializer;
 import com.shinyi.eventbus.serialize.Serializer;
+import com.shinyi.eventbus.monitor.MetricsHolder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationContext;
@@ -178,7 +179,11 @@ public class RabbitMqEventListenerRegistry<T extends EventModel<?>> implements E
                         EventModel<?> eventModel = deserialize(body, consumerTag, listener);
                         listener.onMessage((T) eventModel);
                         consumerChannel.basicAck(envelope.getDeliveryTag(), false);
+                        // 记录消费成功指标
+                        MetricsHolder.increment(registryBeanName, exchange, "events.consumed", 1);
                     } catch (Exception e) {
+                        // 记录消费失败指标
+                        MetricsHolder.increment(registryBeanName, exchange, "events.failed", 1);
                         log.warn("消息处理失败: " + e.getMessage(), e);
                     }
                 }
