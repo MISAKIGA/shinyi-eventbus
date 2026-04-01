@@ -19,6 +19,7 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
 import org.springframework.context.ApplicationContext;
@@ -458,6 +459,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
     private class ConsumerHandler {
         private final Set<KafkaConsumer<String, byte[]>> consumerSet = new ConcurrentHashSet<>();
         private final Set<ExecutorService> executorSet = new ConcurrentHashSet<>();
+        private ExecutorService parallelExecutor;  // parallel processing thread pool
 
         void initConsumer(com.shinyi.eventbus.EventListener<T> listener, String defaultTopic,
                           KafkaConnectConfig config, EosOffsetManager eosManager,
@@ -481,6 +483,52 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
             List<String> topicList = parseTopics(topics);
             consumer.subscribe(topicList);
 
+            // Initialize parallel processing thread pool
+            if (parallelExecutor == null) {
+                int configuredThreads = config.getConsumerThreads();
+
+                // Try to get partition count for intelligent thread balancing
+                int partitionCount = 0;
+                try {
+                    List<PartitionInfo> partitions = consumer.partitionsFor(
+                        topicList.get(0), Duration.ofSeconds(5));
+                    if (partitions != null && !partitions.isEmpty()) {
+                        partitionCount = partitions.size();
+                    }
+                } catch (Exception e) {
+                    // Unable to get partition count, use configured value
+                }
+
+                int threads;
+                int cpuCores = Runtime.getRuntime().availableProcessors();
+
+                if (config.isAutoDetectConsumerThreads() && partitionCount > 0) {
+                    // Intelligent balancing strategy:
+                    if (partitionCount <= cpuCores) {
+                        threads = Math.min(partitionCount, configuredThreads > 0 ? configuredThreads : cpuCores);
+                    } else {
+                        int balancedThreads = Math.min(cpuCores * 4, 32);
+                        threads = configuredThreads > 0
+                            ? Math.min(configuredThreads, balancedThreads)
+                            : balancedThreads;
+                    }
+                    if (!performanceMode) {
+                        log.info("Kafka parallel consumer: detected {} partitions, {} CPU cores, using {} threads (balanced)",
+                            partitionCount, cpuCores, threads);
+                    }
+                } else {
+                    threads = configuredThreads <= 0 ? cpuCores : configuredThreads;
+                    threads = Math.min(threads, 32);
+                }
+
+                parallelExecutor = Executors.newFixedThreadPool(threads, r -> {
+                    Thread t = new Thread(r, "kafka-parallel-consumer");
+                    t.setDaemon(true);
+                    return t;
+                });
+                executorSet.add(parallelExecutor);
+            }
+
             String threadName = topicList.size() > 1
                 ? "kafka-consumer-multi-" + topicList.get(0)
                 : "kafka-consumer-" + topicList.get(0);
@@ -493,30 +541,38 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                     while (!Thread.currentThread().isInterrupted()) {
                         try {
                             ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(1000));
-                            for (ConsumerRecord<String, byte[]> record : records) {
-                                long consumeStart = System.currentTimeMillis();
-                                try {
-                                    if (record.value() == null || record.value().length == 0) {
-                                        if (!performanceMode) {
-                                            log.warn("Message body is empty, skipping. offset={}", record.offset());
+                            if (records == null || records.isEmpty()) {
+                                continue;
+                            }
+
+                            // Group records by TopicPartition for parallel processing
+                            Map<TopicPartition, List<ConsumerRecord<String, byte[]>>> recordsByPartition =
+                                records.partitions().stream()
+                                    .collect(Collectors.toMap(
+                                        tp -> tp,
+                                        tp -> records.records(tp)
+                                    ));
+
+                            // Create parallel tasks for each partition
+                            CountDownLatch latch = new CountDownLatch(recordsByPartition.size());
+
+                            recordsByPartition.forEach((tp, partitionRecords) -> {
+                                parallelExecutor.submit(() -> {
+                                    try {
+                                        for (ConsumerRecord<String, byte[]> record : partitionRecords) {
+                                            processRecord(record, finalListener, eosEnabled, eosManager, consumer, commitBatchSize, deserializeFn);
                                         }
-                                        continue;
+                                    } finally {
+                                        latch.countDown();
                                     }
-                                    EventModel<?> eventModel = deserializeFn.apply(record.value(), record.offset() + "", finalListener);
-                                    finalListener.onMessage((T) eventModel);
-                                    // EOS: Track offset for manual commit after successful processing
-                                    if (eosEnabled) {
-                                        eosManager.trackOffsetAndCommit(consumer, record, commitBatchSize);
-                                    }
-                                    // 记录消费成功指标
-                                    MetricsHolder.increment(registryBeanName, record.topic(), "events.consumed", 1);
-                                } catch (Exception e) {
-                                    // 记录消费失败指标
-                                    MetricsHolder.increment(registryBeanName, record.topic(), "events.failed", 1);
-                                    if (!performanceMode) {
-                                        log.warn("Message processing failed: " + e.getMessage(), e);
-                                    }
-                                }
+                                });
+                            });
+
+                            // Wait for all partitions to complete processing
+                            try {
+                                latch.await(5, TimeUnit.MINUTES);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
                             }
                         } catch (WakeupException e) {
                             break;
@@ -533,6 +589,36 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
 
             if (!performanceMode) {
                 log.info("Kafka consumer started for topics: {}, group: {}", topicList, finalListener.group());
+            }
+        }
+
+        private void processRecord(ConsumerRecord<String, byte[]> record,
+                                  com.shinyi.eventbus.EventListener<T> listener,
+                                  boolean eosEnabled,
+                                  EosOffsetManager eosManager,
+                                  KafkaConsumer<String, byte[]> consumer,
+                                  int commitBatchSize,
+                                  DeserializeFunction<T> deserializeFn) {
+            try {
+                if (record.value() == null || record.value().length == 0) {
+                    if (!performanceMode) {
+                        log.warn("Message body is empty, skipping. offset={}", record.offset());
+                    }
+                    return;
+                }
+                EventModel<?> eventModel = deserializeFn.apply(record.value(), record.offset() + "", listener);
+                listener.onMessage((T) eventModel);
+                // EOS: Track offset
+                if (eosEnabled) {
+                    eosManager.trackOffsetAndCommit(consumer, record, commitBatchSize);
+                }
+                // Record metrics
+                MetricsHolder.increment(registryBeanName, record.topic(), "events.consumed", 1);
+            } catch (Exception e) {
+                MetricsHolder.increment(registryBeanName, record.topic(), "events.failed", 1);
+                if (!performanceMode) {
+                    log.warn("Message processing failed: " + e.getMessage(), e);
+                }
             }
         }
 
