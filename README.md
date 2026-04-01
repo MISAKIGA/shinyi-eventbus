@@ -36,7 +36,7 @@ Build the project and add it to your Spring Boot application's `pom.xml`:
 <dependency>
     <groupId>io.github.misakiga</groupId>
     <artifactId>shinyi-eventbus</artifactId>
-    <version>1.1.7</version>
+    <version>1.1.8</version>
 </dependency>
 ```
 

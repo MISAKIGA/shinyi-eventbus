@@ -4,7 +4,7 @@
 	<groupId>io.github.misakiga</groupId>
 	<artifactId>shinyi-eventbus</artifactId>
 	<packaging>jar</packaging>
-	<version>1.1.7</version>
+	<version>1.1.8</version>
 
 	<name>Shinyi EventBus</name>
 	<description>A lightweight, annotation-driven event bus framework for Spring Boot.</description>
