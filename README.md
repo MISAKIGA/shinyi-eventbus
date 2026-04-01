@@ -36,7 +36,7 @@ Build the project and add it to your Spring Boot application's `pom.xml`:
 <dependency>
     <groupId>io.github.misakiga</groupId>
     <artifactId>shinyi-eventbus</artifactId>
-    <version>1.1.4</version>
+    <version>1.1.6</version>
 </dependency>
 ```
 
@@ -223,6 +223,55 @@ shinyi:
           key-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
           value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
 ```
+
+## Monitoring and Telemetry
+
+The framework provides built-in monitoring capabilities with configurable reset strategies.
+
+```yaml
+shinyi:
+  eventbus:
+    monitoring:
+      enabled: true
+      interval-seconds: 10
+      # Reset strategy: NEVER, DAILY, HOURLY, INTERVAL, MANUAL
+      reset-strategy: INTERVAL
+      reset-interval-seconds: 86400  # 24 hours
+      daily-reset-time: "00:00"
+      log:
+        enabled: true
+      http:
+        enabled: true
+        port: 18081
+        path: /metrics/eventbus
+```
+
+### Reset Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| `NEVER` | Never reset - cumulative metrics only |
+| `DAILY` | Reset at midnight every day |
+| `HOURLY` | Reset at the top of every hour |
+| `INTERVAL` | Reset at a fixed interval (default: 24 hours) |
+| `MANUAL` | Only reset when explicitly called |
+
+### HTTP Metrics Endpoint
+
+When enabled, metrics are exposed at `/metrics/eventbus` (configurable via `http.path`):
+
+```json
+{
+  "timestamp": 1775030343205,
+  "counters": {"kafka:demo-topic:events.consumed": 645873},
+  "cumulativeCounters": {"kafka:demo-topic:events.consumed": 1000000},
+  "histograms": {"kafka:demo-topic:latency": {"count": 1000000, "mean": 0.01}},
+  "cumulativeHistograms": {...}
+}
+```
+
+- **counters**: Period metrics (reset according to strategy)
+- **cumulativeCounters**: Lifetime totals (never reset)
 
 ## Documentation
 

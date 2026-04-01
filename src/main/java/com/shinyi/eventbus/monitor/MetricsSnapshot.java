@@ -16,6 +16,8 @@ public class MetricsSnapshot {
     private final Map<String, Long> counters;
     private final Map<String, AtomicLong> gauges;
     private final Map<String, HistogramData> histograms;
+    private final Map<String, Long> cumulativeCounters;
+    private final Map<String, HistogramData> cumulativeHistograms;
 
     /**
      * 空快照构造方法
@@ -25,6 +27,8 @@ public class MetricsSnapshot {
         this.counters = new HashMap<>();
         this.gauges = new HashMap<>();
         this.histograms = new HashMap<>();
+        this.cumulativeCounters = new HashMap<>();
+        this.cumulativeHistograms = new HashMap<>();
     }
 
     public MetricsSnapshot(long timestamp, Map<String, Long> counters,
@@ -34,6 +38,22 @@ public class MetricsSnapshot {
         this.counters = counters;
         this.gauges = gauges;
         this.histograms = histograms;
+        this.cumulativeCounters = new HashMap<>();
+        this.cumulativeHistograms = new HashMap<>();
+    }
+
+    public MetricsSnapshot(long timestamp,
+                           Map<String, Long> counters,
+                           Map<String, AtomicLong> gauges,
+                           Map<String, HistogramData> histograms,
+                           Map<String, Long> cumulativeCounters,
+                           Map<String, HistogramData> cumulativeHistograms) {
+        this.timestamp = timestamp;
+        this.counters = counters;
+        this.gauges = gauges;
+        this.histograms = histograms;
+        this.cumulativeCounters = cumulativeCounters;
+        this.cumulativeHistograms = cumulativeHistograms;
     }
 
     public long getTimestamp() {
@@ -50,6 +70,14 @@ public class MetricsSnapshot {
 
     public Map<String, HistogramData> getHistograms() {
         return histograms;
+    }
+
+    public Map<String, Long> getCumulativeCounters() {
+        return cumulativeCounters;
+    }
+
+    public Map<String, HistogramData> getCumulativeHistograms() {
+        return cumulativeHistograms;
     }
 
     /**
@@ -119,6 +147,14 @@ public class MetricsSnapshot {
         Map<String, Object> histogramsMap = new HashMap<>();
         histograms.forEach((k, v) -> histogramsMap.put(k, v.toMap()));
         result.put("histograms", histogramsMap);
+
+        Map<String, Object> cumulativeCountersMap = new HashMap<>();
+        cumulativeCounters.forEach((k, v) -> cumulativeCountersMap.put(k, v));
+        result.put("cumulativeCounters", cumulativeCountersMap);
+
+        Map<String, Object> cumulativeHistogramsMap = new HashMap<>();
+        cumulativeHistograms.forEach((k, v) -> cumulativeHistogramsMap.put(k, v.toMap()));
+        result.put("cumulativeHistograms", cumulativeHistogramsMap);
 
         return result;
     }

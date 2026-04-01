@@ -43,7 +43,11 @@ public class MonitoringAutoConfiguration {
     public MetricsCollector metricsCollector(Metrics metrics) {
         // 设置Metrics到Holder，供全局访问
         MetricsHolder.setMetrics(metrics);
-        return new MetricsCollector(metrics, config.getIntervalSeconds() * 1000, config.getLog().isEnabled());
+        return new MetricsCollector(metrics,
+                config.getIntervalSeconds() * 1000,
+                config.getLog().isEnabled(),
+                config.getResetStrategy(),
+                config.getResetIntervalSeconds() * 1000);
     }
 
     @Bean

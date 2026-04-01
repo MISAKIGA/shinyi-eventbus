@@ -37,9 +37,14 @@ public class LightweightHistogramTest {
     @Test
     public void testReset() {
         LightweightHistogram histogram = new LightweightHistogram();
-        histogram.record(50);
+        histogram.record(100);
+        histogram.record(200);
+        assertTrue(histogram.getCount() > 0);
+
         histogram.reset();
+
         assertEquals(0, histogram.getCount());
+        assertEquals(0, histogram.getMean());
     }
 
     @Test
