@@ -8,6 +8,7 @@ import com.shinyi.eventbus.exception.EventBusException;
 import com.shinyi.eventbus.exception.EventBusExceptionType;
 import com.shinyi.eventbus.serialize.BaseSerializer;
 import com.shinyi.eventbus.serialize.Serializer;
+import com.shinyi.eventbus.monitor.MetricsHolder;
 import com.shinyi.eventbus.monitor.PerformanceMonitor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -474,6 +475,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                         try {
                             ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(1000));
                             for (ConsumerRecord<String, byte[]> record : records) {
+                                long consumeStart = System.currentTimeMillis();
                                 try {
                                     if (record.value() == null || record.value().length == 0) {
                                         if (!performanceMode) {
@@ -487,7 +489,11 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                                     if (eosEnabled) {
                                         eosManager.trackOffsetAndCommit(consumer, record, commitBatchSize);
                                     }
+                                    // 记录消费成功指标
+                                    MetricsHolder.increment(registryBeanName, finalTopic, "events.consumed", 1);
                                 } catch (Exception e) {
+                                    // 记录消费失败指标
+                                    MetricsHolder.increment(registryBeanName, finalTopic, "events.failed", 1);
                                     if (!performanceMode) {
                                         log.warn("Message processing failed: " + e.getMessage(), e);
                                     }

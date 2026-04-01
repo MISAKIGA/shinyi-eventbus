@@ -18,6 +18,7 @@ import com.shinyi.eventbus.exception.EventBusException;
 import com.shinyi.eventbus.exception.EventBusExceptionType;
 import com.shinyi.eventbus.serialize.BaseSerializer;
 import com.shinyi.eventbus.serialize.Serializer;
+import com.shinyi.eventbus.monitor.MetricsHolder;
 import com.shinyi.eventbus.monitor.PerformanceMonitor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -145,7 +146,11 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                                 if (eosEnabled) {
                                     trackOffsetAndCommit(consumer, record, commitBatchSize);
                                 }
+                                // 记录消费成功指标
+                                MetricsHolder.increment(registryBeanName, finalTopic, "events.consumed", 1);
                             } catch (Exception e) {
+                                // 记录消费失败指标
+                                MetricsHolder.increment(registryBeanName, finalTopic, "events.failed", 1);
                                 log.warn("Message processing failed: " + e.getMessage(), e);
                             }
                         }

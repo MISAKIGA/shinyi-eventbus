@@ -11,6 +11,7 @@ import com.shinyi.eventbus.anno.EventBusListener;
 import com.shinyi.eventbus.exception.EventBusException;
 import com.shinyi.eventbus.exception.EventBusExceptionType;
 import com.shinyi.eventbus.listener.MethodEventListener;
+import com.shinyi.eventbus.monitor.MetricsHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.BeansException;
@@ -91,7 +92,13 @@ public class EventListenerRegistryManager implements SmartLifecycle, Application
 
         try {
             eventModelEventListenerRegistry.publish(event);
+            // 记录发布成功指标
+            long latencyMs = (System.nanoTime() - publishStart) / 1_000_000;
+            MetricsHolder.increment(eventBusTypeName, event.getTopic(), "events.published", 1);
+            MetricsHolder.recordLatency(eventBusTypeName, event.getTopic(), latencyMs);
         } catch (Exception e) {
+            // 记录发布失败指标
+            MetricsHolder.increment(eventBusTypeName, event.getTopic(), "events.failed", 1);
             if(event.isEnableAsync()) {
                 throw new EventBusException(EventBusExceptionType.EVENTBUS_PUBLISH_ERROR, e);
             } else {
