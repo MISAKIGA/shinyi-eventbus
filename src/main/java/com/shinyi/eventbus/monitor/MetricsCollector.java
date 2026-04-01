@@ -14,18 +14,29 @@ public class MetricsCollector implements Runnable {
     private final Metrics metrics;
     private final long intervalMs;
     private final boolean logEnabled;
+    private final ResetStrategy resetStrategy;
+    private final long resetIntervalMs;
     private volatile boolean running = true;
     private volatile MetricsSnapshot lastSnapshot;
     private volatile long lastCollectTime = System.currentTimeMillis();
+    private volatile long lastResetTime = System.currentTimeMillis();
 
     public MetricsCollector(Metrics metrics, long intervalMs) {
-        this(metrics, intervalMs, true);
+        this(metrics, intervalMs, true, ResetStrategy.INTERVAL, 86400000);
     }
 
     public MetricsCollector(Metrics metrics, long intervalMs, boolean logEnabled) {
+        this(metrics, intervalMs, logEnabled, ResetStrategy.INTERVAL, 86400000);
+    }
+
+    public MetricsCollector(Metrics metrics, long intervalMs, boolean logEnabled,
+                           ResetStrategy resetStrategy, long resetIntervalMs) {
         this.metrics = metrics;
         this.intervalMs = intervalMs;
         this.logEnabled = logEnabled;
+        this.resetStrategy = resetStrategy;
+        this.resetIntervalMs = resetIntervalMs;
+        this.lastResetTime = System.currentTimeMillis();
     }
 
     @Override
@@ -33,8 +44,16 @@ public class MetricsCollector implements Runnable {
         if (!running) return;
         try {
             long now = System.currentTimeMillis();
+
+            // Check if we should reset - use atomic collectAndReset
+            if (shouldReset() && metrics instanceof SimpleMetrics) {
+                ((SimpleMetrics) metrics).collectAndReset();
+                lastResetTime = now;
+            }
+
+            // Collect without reset
             lastSnapshot = metrics.collect();
-            metrics.reset(); // 重置增量值（保留累计值）
+            lastCollectTime = now;
 
             // 定期日志输出
             if (logEnabled && log.isInfoEnabled()) {
@@ -44,6 +63,29 @@ public class MetricsCollector implements Runnable {
             // 优雅降级
             log.warn("Failed to collect metrics", t);
         }
+    }
+
+    private boolean shouldReset() {
+        if (resetStrategy == ResetStrategy.NEVER || resetStrategy == ResetStrategy.MANUAL) {
+            return false;
+        }
+
+        long now = System.currentTimeMillis();
+        long elapsed = now - lastResetTime;
+
+        switch (resetStrategy) {
+            case DAILY:
+                return hasDayPassed(lastResetTime, now);
+            case HOURLY:
+                return elapsed >= 3600000;
+            case INTERVAL:
+            default:
+                return elapsed >= resetIntervalMs;
+        }
+    }
+
+    private boolean hasDayPassed(long lastReset, long now) {
+        return (now - lastReset) > 23 * 3600000;
     }
 
     private void printMetricsLog(long now) {
@@ -141,5 +183,12 @@ public class MetricsCollector implements Runnable {
 
     public void shutdown() {
         running = false;
+    }
+
+    public void reset() {
+        if (metrics instanceof SimpleMetrics) {
+            ((SimpleMetrics) metrics).collectAndReset();
+            lastResetTime = System.currentTimeMillis();
+        }
     }
 }
