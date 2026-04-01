@@ -16,10 +16,10 @@ public class MetricsCollectorTest {
 
         metrics.increment("kafka", "topic1", "events.published", 10);
 
-        // 手动触发收集
+        // Manually trigger collection
         collector.run();
 
-        // 验证快照已生成
+        // Verify snapshot was generated
         assertNotNull(collector.getLastSnapshot());
     }
 
@@ -28,7 +28,7 @@ public class MetricsCollectorTest {
         SimpleMetrics metrics = new SimpleMetrics();
         MetricsCollector collector = new MetricsCollector(metrics, 1000);
 
-        // 未收集前，快照应为 null
+        // Before collection, snapshot should be null
         assertNull(collector.getLastSnapshot());
     }
 
@@ -42,9 +42,9 @@ public class MetricsCollectorTest {
 
         collector.shutdown();
 
-        // shutdown 后 run 不应再收集
+        // After shutdown, run should not collect
         collector.run();
-        // 但最后一次快照应保留
+        // But the last snapshot should be retained
         assertNotNull(collector.getLastSnapshot());
     }
 
@@ -55,7 +55,7 @@ public class MetricsCollectorTest {
 
         collector.shutdown();
 
-        // shutdown 后 run 不应再更新快照
+        // After shutdown, run should not update snapshot
         collector.run();
         assertNull(collector.getLastSnapshot());
     }
@@ -99,7 +99,7 @@ public class MetricsCollectorTest {
         collector.run();
         MetricsSnapshot snapshot2 = collector.getLastSnapshot();
 
-        // 两次收集应产生不同的时间戳
+        // Two collections should produce different timestamps
         assertTrue(snapshot2.getTimestamp() >= snapshot1.getTimestamp());
     }
 
@@ -108,7 +108,7 @@ public class MetricsCollectorTest {
         Metrics metrics = new NoOpMetrics();
         MetricsCollector collector = new MetricsCollector(metrics, 1000);
 
-        // 不应抛出异常
+        // Should not throw exception
         collector.run();
         assertNotNull(collector.getLastSnapshot());
     }
@@ -121,10 +121,10 @@ public class MetricsCollectorTest {
         metrics.increment("kafka", "topic1", "events.published", 10);
         collector.run();
 
-        // 收集后，计数应该被重置
+        // After collection, counters should be reset
         metrics.reset();
 
-        // 再次收集，计数器应为0
+        // Collect again, counter should be 0
         collector.run();
         MetricsSnapshot snapshot = collector.getLastSnapshot();
         assertTrue(snapshot.getCounters().get("kafka:topic1:events.published") == 0);
@@ -135,41 +135,41 @@ public class MetricsCollectorTest {
         SimpleMetrics metrics = new SimpleMetrics();
         MetricsCollector collector = new MetricsCollector(metrics, 5000);
 
-        // 验证 collector 创建成功
+        // Verify collector was created successfully
         assertNotNull(collector);
     }
 
     @Test
     public void testDeltaCalculation() {
-        // 创建 SimpleMetrics
+        // Create SimpleMetrics
         SimpleMetrics metrics = new SimpleMetrics();
 
-        // 第一次: 增加 100
+        // First: increase by 100
         metrics.increment("kafka", "topic1", "events.consumed", 100);
         metrics.increment("kafka", "topic1", "events.published", 50);
 
-        // 创建 collector (logEnabled=false 避免输出)
+        // Create collector (logEnabled=false to suppress output)
         MetricsCollector collector = new MetricsCollector(metrics, 1000, false);
 
-        // 第一次收集
+        // First collection
         collector.run();
         MetricsSnapshot snap1 = collector.getLastSnapshot();
 
-        // 第二次: 再增加 200 (累计变成 300)
+        // Second: increase by 200 (total becomes 300)
         metrics.increment("kafka", "topic1", "events.consumed", 200);
         metrics.increment("kafka", "topic1", "events.published", 100);
 
-        // 等待一小段时间确保时间差
+        // Wait a bit to ensure time difference
         try {
             Thread.sleep(1100);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
 
-        // 第二次收集
+        // Second collection
         collector.run();
 
-        // 验证: getTotalCount 返回累计值 (300, 150)
+        // Verify: getTotalCount returns cumulative values (300, 150)
         assertEquals(300, metrics.getTotalCount("kafka", "topic1", "events.consumed"));
         assertEquals(150, metrics.getTotalCount("kafka", "topic1", "events.published"));
     }
