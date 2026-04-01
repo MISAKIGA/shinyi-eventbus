@@ -85,9 +85,9 @@ public class EventListenerRegistryManager implements SmartLifecycle, Application
         long publishStart = System.nanoTime();
         String syncDescribe = event.isEnableAsync() ? "异步" : "同步";
 
-        // 只有非性能模式才打印详细日志
-        if (!com.shinyi.eventbus.monitor.PerformanceMonitor.isEnabled()) {
-            log.info("{} 开始发布 {} {} 事件：{}", event.getTopic(), eventBusTypeName, syncDescribe, event.getEventId());
+        // Publish 日志 - 仅 debug 级别且开启时才打印，避免影响性能
+        if (log.isDebugEnabled()) {
+            log.debug("{} 开始发布 {} {} 事件：{}", event.getTopic(), eventBusTypeName, syncDescribe, event.getEventId());
         }
 
         try {
@@ -107,8 +107,8 @@ public class EventListenerRegistryManager implements SmartLifecycle, Application
             }
         } finally {
             com.shinyi.eventbus.monitor.PerformanceMonitor.record("registry.publish", System.nanoTime() - publishStart);
-            if (!com.shinyi.eventbus.monitor.PerformanceMonitor.isEnabled()) {
-                log.info("{} 事件发布 {} 耗时：{} ms", eventBusTypeName, event.getTopic(), (System.nanoTime() - publishStart) / 1_000_000);
+            if (log.isDebugEnabled()) {
+                log.debug("{} 事件发布 {} 耗时：{} ms", eventBusTypeName, event.getTopic(), (System.nanoTime() - publishStart) / 1_000_000);
             }
         }
     }

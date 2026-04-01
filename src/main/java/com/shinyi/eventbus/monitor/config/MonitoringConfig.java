@@ -11,7 +11,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class MonitoringConfig {
     private boolean enabled = false;
     private long intervalSeconds = 60;
+    private LogConfig log = new LogConfig();
     private HttpConfig http = new HttpConfig();
+
+    @Data
+    public static class LogConfig {
+        private boolean enabled = true;
+    }
 
     @Data
     public static class HttpConfig {

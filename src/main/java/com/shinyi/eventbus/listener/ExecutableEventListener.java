@@ -107,7 +107,9 @@ public abstract class ExecutableEventListener<T> extends BaseEventListener<Event
                 Map<String, String> err = MapUtil.of("ERR", errMsg);
                 throw new EventBusException(EventBusExceptionType.LISTENER_BIZ_ERROR, err, e);
             } finally {
-                log.info("Topic: {} 消息处理耗时：{}，数据量：{}", entry.getKey(), System.currentTimeMillis() - start, entry.getValue().size());
+                if (log.isDebugEnabled()) {
+                    log.debug("Topic: {} 消息处理耗时：{}ms，数据量：{}", entry.getKey(), System.currentTimeMillis() - start, entry.getValue().size());
+                }
             }
         }
         MDC.put("traceId", traceId);

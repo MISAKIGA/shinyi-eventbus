@@ -4,7 +4,7 @@
 	<groupId>io.github.misakiga</groupId>
 	<artifactId>shinyi-eventbus</artifactId>
 	<packaging>jar</packaging>
-	<version>1.1.4</version>
+	<version>1.1.5</version>
 
 	<name>Shinyi EventBus</name>
 	<description>A lightweight, annotation-driven event bus framework for Spring Boot.</description>
@@ -292,6 +292,55 @@
 	</build>
 
 	<profiles>
+		<!-- 性能测试 profile - 使用 mvn test -Pbenchmark 运行 -->
+		<profile>
+			<id>benchmark</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-surefire-plugin</artifactId>
+						<version>3.2.5</version>
+						<configuration>
+							<includes>
+								<include>**/KafkaEventBusBenchmarkTest.java</include>
+								<include>**/KafkaEventBusComprehensiveTest.java</include>
+								<include>**/KafkaEosBenchmarkTest.java</include>
+								<include>**/PureKafkaBenchmarkTest.java</include>
+								<include>**/KafkaProducerTest.java</include>
+								<include>**/MethodEventListenerPerformanceTest.java</include>
+							</includes>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+		<!-- 默认 profile - 跳过性能测试 -->
+		<profile>
+			<id>default</id>
+			<activation>
+				<activeByDefault>true</activeByDefault>
+			</activation>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-surefire-plugin</artifactId>
+						<version>3.2.5</version>
+						<configuration>
+							<excludes>
+								<exclude>**/KafkaEventBusBenchmarkTest.java</exclude>
+								<exclude>**/KafkaEventBusComprehensiveTest.java</exclude>
+								<exclude>**/KafkaEosBenchmarkTest.java</exclude>
+								<exclude>**/PureKafkaBenchmarkTest.java</exclude>
+								<exclude>**/KafkaProducerTest.java</exclude>
+								<exclude>**/MethodEventListenerPerformanceTest.java</exclude>
+							</excludes>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
 		<profile>
 			<id>release</id>
 			<build>
