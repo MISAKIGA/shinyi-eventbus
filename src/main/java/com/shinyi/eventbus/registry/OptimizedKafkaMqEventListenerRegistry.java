@@ -553,27 +553,17 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                                         tp -> records.records(tp)
                                     ));
 
-                            // Create parallel tasks for each partition
-                            CountDownLatch latch = new CountDownLatch(recordsByPartition.size());
+                            // Directly submit tasks for each partition without waiting - Flink-style pipeline
+                            for (TopicPartition tp : records.partitions()) {
+                                List<ConsumerRecord<String, byte[]>> partitionRecords = records.records(tp);
 
-                            recordsByPartition.forEach((tp, partitionRecords) -> {
                                 parallelExecutor.submit(() -> {
-                                    try {
-                                        for (ConsumerRecord<String, byte[]> record : partitionRecords) {
-                                            processRecord(record, finalListener, eosEnabled, eosManager, consumer, commitBatchSize, deserializeFn);
-                                        }
-                                    } finally {
-                                        latch.countDown();
+                                    for (ConsumerRecord<String, byte[]> record : partitionRecords) {
+                                        processRecord(record, tp, finalListener, eosEnabled, eosManager, consumer, commitBatchSize, deserializeFn);
                                     }
                                 });
-                            });
-
-                            // Wait for all partitions to complete processing
-                            try {
-                                latch.await(5, TimeUnit.MINUTES);
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
                             }
+                            // Immediately return, continue next poll() - non-blocking!
                         } catch (WakeupException e) {
                             break;
                         }
@@ -593,6 +583,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         }
 
         private void processRecord(ConsumerRecord<String, byte[]> record,
+                                  TopicPartition tp,
                                   com.shinyi.eventbus.EventListener<T> listener,
                                   boolean eosEnabled,
                                   EosOffsetManager eosManager,
@@ -608,9 +599,8 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                 }
                 EventModel<?> eventModel = deserializeFn.apply(record.value(), record.offset() + "", listener);
                 listener.onMessage((T) eventModel);
-                // EOS: Track offset
+                // EOS: Partition-local tracking
                 if (eosEnabled) {
-                    TopicPartition tp = new TopicPartition(record.topic(), record.partition());
                     eosManager.trackOffsetAndCommit(consumer, tp, record.offset(), commitBatchSize);
                 }
                 // Record metrics
