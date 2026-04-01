@@ -121,6 +121,28 @@ public class KafkaConnectConfig {
      */
     private int fetchMaxWaitMs = 1000;
 
+    // ==================== Parallel Consumption (P1) ====================
+
+    /**
+     * Number of threads for parallel message processing.
+     * Default: CPU cores (auto-determined at runtime)
+     * Maximum: min(consumerThreads, partitionCount) when partition count is known
+     *
+     * Special values:
+     *   0 or negative = auto (use CPU cores)
+     *   1 = single-threaded mode (disable parallel processing)
+     *
+     * Recommended: Set to CPU cores or partition count, whichever is smaller.
+     */
+    private int consumerThreads = 0;  // 0 means auto-detect
+
+    /**
+     * Auto-detect consumer threads based on partition count.
+     * If true: consumerThreads = min(partitionCount, CPU cores)
+     * If false: consumerThreads = consumerThreads config value
+     */
+    private boolean autoDetectConsumerThreads = true;
+
     /**
      * Consumer max.partition.fetch.bytes setting - maximum data per partition per fetch
      * Default: 1048576 (1MB) - optimized for throughput
