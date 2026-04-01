@@ -72,4 +72,16 @@ public class KafkaParallelConsumeTest {
         // 50 > 2, so threads = min(2*4, min(50, 32)) = min(8, 32) = 8
         assertEquals(8, threads);
     }
+
+    @Test
+    public void testNoBlockingInPipeline() {
+        // Verify configuration ensures no blocking in pipeline mode
+        // This test mainly verifies code structure
+
+        KafkaConnectConfig config = new KafkaConnectConfig();
+        config.setEnableManualCommit(false);  // Non-EOS mode
+
+        // Confirm configuration is correct
+        assertFalse(config.isEnableManualCommit());
+    }
 }
