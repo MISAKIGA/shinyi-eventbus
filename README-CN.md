@@ -225,6 +225,39 @@ shinyi:
           value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
 ```
 
+### 多 Topic 订阅
+
+Kafka 支持通过逗号分隔的字符串订阅多个 topic。
+
+**配置示例：**
+```yaml
+shinyi:
+  eventbus:
+    kafka:
+      connect-configs:
+        my-kafka:
+          # 逗号分隔的 topic 列表
+          topic: "orders,payments,notifications"
+```
+
+**注解方式：**
+```java
+@EventBusListener(
+    name = "kafka",
+    topic = "orders,payments,notifications",
+    group = "my-consumer-group"
+)
+public void onEvent(EventModel<?> event) {
+    // 处理来自三个 topic 的消息
+    // 使用 event.getTopic() 区分消息来源
+}
+```
+
+**注意事项：**
+- 所有 topic 共用同一个消费线程（单线程处理）
+- 高吞吐场景建议为每个 topic 配置独立的 listener
+- EOS（精确一次语义）在多 topic 场景下正常工作
+
 ## 文档
 
 更多详细信息，请参阅 `doc/` 目录下的文档：

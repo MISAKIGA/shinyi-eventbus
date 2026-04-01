@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 
 /**
  * 优化版本的KafkaMqEventListenerRegistry
@@ -255,6 +256,21 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         }
     }
 
+    /**
+     * Parse comma-separated topic string into a list.
+     * @param topics comma-separated topic string (e.g., "topic1,topic2,topic3")
+     * @return list of trimmed, non-empty topics
+     */
+    static List<String> parseTopics(String topics) {
+        if (topics == null || topics.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(topics.split(","))
+            .map(String::trim)
+            .filter(t -> !t.isEmpty())
+            .collect(Collectors.toList());
+    }
+
     // ==================== ProducerHandler ====================
 
     /**
@@ -458,14 +474,17 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
             KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
             consumerSet.add(consumer);
 
-            String topic = listener.topic();
-            if (topic == null || topic.isEmpty()) {
-                topic = defaultTopic;
+            String topics = listener.topic();
+            if (topics == null || topics.isEmpty()) {
+                topics = defaultTopic;
             }
-            final String finalTopic = topic;
-            consumer.subscribe(Collections.singletonList(finalTopic));
+            List<String> topicList = parseTopics(topics);
+            consumer.subscribe(topicList);
 
-            ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, "kafka-consumer-" + finalTopic));
+            String threadName = topicList.size() > 1
+                ? "kafka-consumer-multi-" + topicList.get(0)
+                : "kafka-consumer-" + topicList.get(0);
+            ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, threadName));
             executorSet.add(executor);
 
             final com.shinyi.eventbus.EventListener<T> finalListener = listener;
@@ -490,10 +509,10 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                                         eosManager.trackOffsetAndCommit(consumer, record, commitBatchSize);
                                     }
                                     // 记录消费成功指标
-                                    MetricsHolder.increment(registryBeanName, finalTopic, "events.consumed", 1);
+                                    MetricsHolder.increment(registryBeanName, record.topic(), "events.consumed", 1);
                                 } catch (Exception e) {
                                     // 记录消费失败指标
-                                    MetricsHolder.increment(registryBeanName, finalTopic, "events.failed", 1);
+                                    MetricsHolder.increment(registryBeanName, record.topic(), "events.failed", 1);
                                     if (!performanceMode) {
                                         log.warn("Message processing failed: " + e.getMessage(), e);
                                     }
@@ -513,7 +532,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
             });
 
             if (!performanceMode) {
-                log.info("Kafka consumer started for topic: {}, group: {}", finalTopic, finalListener.group());
+                log.info("Kafka consumer started for topics: {}, group: {}", topicList, finalListener.group());
             }
         }
 

@@ -39,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -71,6 +72,16 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
     private static class OffsetCommitState {
         Map<TopicPartition, OffsetAndMetadata> pendingOffsets = new ConcurrentHashMap<>();
         AtomicInteger processedCount = new AtomicInteger(0);
+    }
+
+    private static List<String> parseTopics(String topics) {
+        if (topics == null || topics.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(topics.split(","))
+            .map(String::trim)
+            .filter(t -> !t.isEmpty())
+            .collect(Collectors.toList());
     }
 
     @Override
@@ -118,14 +129,17 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
         KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps);
         consumerSet.add(consumer);
 
-        String topic = listener.topic();
-        if (topic == null || topic.isEmpty()) {
-            topic = kafkaConnectConfig.getTopic();
+        String topics = listener.topic();
+        if (topics == null || topics.isEmpty()) {
+            topics = kafkaConnectConfig.getTopic();
         }
-        final String finalTopic = topic;
-        consumer.subscribe(Collections.singletonList(finalTopic));
+        List<String> topicList = parseTopics(topics);
+        consumer.subscribe(topicList);
 
-        ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, "kafka-consumer-" + finalTopic));
+        String threadName = topicList.size() > 1
+            ? "kafka-consumer-multi-" + topicList.get(0)
+            : "kafka-consumer-" + topicList.get(0);
+        ExecutorService executor = Executors.newSingleThreadExecutor(r -> new Thread(r, threadName));
         executorSet.add(executor);
 
         final com.shinyi.eventbus.EventListener<T> finalListener = listener;
@@ -147,10 +161,10 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
                                     trackOffsetAndCommit(consumer, record, commitBatchSize);
                                 }
                                 // 记录消费成功指标
-                                MetricsHolder.increment(registryBeanName, finalTopic, "events.consumed", 1);
+                                MetricsHolder.increment(registryBeanName, record.topic(), "events.consumed", 1);
                             } catch (Exception e) {
                                 // 记录消费失败指标
-                                MetricsHolder.increment(registryBeanName, finalTopic, "events.failed", 1);
+                                MetricsHolder.increment(registryBeanName, record.topic(), "events.failed", 1);
                                 log.warn("Message processing failed: " + e.getMessage(), e);
                             }
                         }
@@ -167,7 +181,7 @@ public class KafkaMqEventListenerRegistry<T extends EventModel<?>> implements Ev
             }
         });
 
-        log.info("Kafka consumer started for topic: {}, group: {}", finalTopic, finalListener.group());
+        log.info("Kafka consumer started for topic: {}, group: {}", topicList.get(0), finalListener.group());
     }
 
     protected EventModel<?> deserialize(byte[] body, String consumerTag, com.shinyi.eventbus.EventListener<T> listener) {
