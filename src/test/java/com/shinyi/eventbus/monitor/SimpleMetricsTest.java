@@ -151,4 +151,30 @@ public class SimpleMetricsTest {
         assertEquals(3, data.getCount());
         assertEquals(20.0, data.getMean(), 0.01);
     }
+
+    @Test
+    public void testAtomicCollectAndReset() throws Exception {
+        SimpleMetrics metrics = new SimpleMetrics();
+        metrics.increment("kafka", "topic1", "events.consumed", 100);
+        metrics.recordLatency("kafka", "topic1", 50);
+
+        // First collect - should have data
+        MetricsSnapshot snap1 = ((SimpleMetrics) metrics).collectAndReset();
+        assertEquals(100L, snap1.getCounters().get("kafka:topic1:events.consumed"));
+
+        // After reset - counters should be zero
+        MetricsSnapshot snap2 = metrics.collect();
+        assertEquals(0L, snap2.getCounters().get("kafka:topic1:events.consumed"));
+    }
+
+    @Test
+    public void testCumulativeCountersPersistAfterReset() throws Exception {
+        SimpleMetrics metrics = new SimpleMetrics();
+        metrics.increment("kafka", "topic1", "events.consumed", 100);
+
+        // Total count should persist after reset
+        metrics.reset();
+        long total = metrics.getTotalCount("kafka", "topic1", "events.consumed");
+        assertEquals(100, total);
+    }
 }
