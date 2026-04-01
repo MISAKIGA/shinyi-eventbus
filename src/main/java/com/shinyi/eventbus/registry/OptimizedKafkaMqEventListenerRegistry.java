@@ -651,6 +651,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
      */
     private class EosOffsetManager {
         private final Map<KafkaConsumer<String, byte[]>, OffsetCommitState> offsetStates = new ConcurrentHashMap<>();
+        private final Object commitLock = new Object();
 
         /**
          * EOS: Track offset and commit when batch size reached
@@ -662,11 +663,14 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
 
             TopicPartition tp = new TopicPartition(record.topic(), record.partition());
             state.pendingOffsets.put(tp, new OffsetAndMetadata(record.offset() + 1));
-            state.processedCount.incrementAndGet();
+            int count = state.processedCount.incrementAndGet();
 
-            // Use processedCount (number of messages) not pendingOffsets.size() (number of partitions)
-            if (state.processedCount.get() >= batchSize) {
-                commitPendingOffsets(consumer);
+            if (count >= batchSize) {
+                synchronized (commitLock) {
+                    if (state.processedCount.get() >= batchSize) {
+                        commitPendingOffsetsInternal(consumer, state);
+                    }
+                }
             }
         }
 
@@ -678,11 +682,9 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
         }
 
         /**
-         * EOS: Commit pending offsets to Kafka
-         * @param removeAfterCommit if true, remove the consumer entry from offsetStates after committing
+         * EOS: Internal commit method - caller must hold commitLock
          */
-        void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer, boolean removeAfterCommit) {
-            OffsetCommitState state = offsetStates.get(consumer);
+        private void commitPendingOffsetsInternal(KafkaConsumer<String, byte[]> consumer, OffsetCommitState state) {
             if (state != null && !state.pendingOffsets.isEmpty()) {
                 try {
                     consumer.commitSync(new HashMap<>(state.pendingOffsets));
@@ -697,8 +699,32 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                     }
                 }
             }
-            if (removeAfterCommit) {
-                offsetStates.remove(consumer);
+        }
+
+        /**
+         * EOS: Commit pending offsets to Kafka
+         * @param removeAfterCommit if true, remove the consumer entry from offsetStates after committing
+         */
+        void commitPendingOffsets(KafkaConsumer<String, byte[]> consumer, boolean removeAfterCommit) {
+            synchronized (commitLock) {
+                OffsetCommitState state = offsetStates.get(consumer);
+                if (state != null && !state.pendingOffsets.isEmpty()) {
+                    try {
+                        consumer.commitSync(new HashMap<>(state.pendingOffsets));
+                        if (!performanceMode) {
+                            log.debug("EOS: Committed offsets for {} partitions", state.pendingOffsets.size());
+                        }
+                        state.pendingOffsets.clear();
+                        state.processedCount.set(0);
+                    } catch (Exception e) {
+                        if (!performanceMode) {
+                            log.error("EOS: Failed to commit offsets: " + e.getMessage(), e);
+                        }
+                    }
+                }
+                if (removeAfterCommit) {
+                    offsetStates.remove(consumer);
+                }
             }
         }
     }
