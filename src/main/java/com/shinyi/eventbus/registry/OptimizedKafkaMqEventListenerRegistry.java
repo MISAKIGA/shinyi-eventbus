@@ -507,7 +507,7 @@ public class OptimizedKafkaMqEventListenerRegistry<T extends EventModel<?>> impl
                     if (partitionCount <= cpuCores) {
                         threads = Math.min(partitionCount, configuredThreads > 0 ? configuredThreads : cpuCores);
                     } else {
-                        int balancedThreads = Math.min(cpuCores * 4, 32);
+                        int balancedThreads = Math.min(cpuCores * 4, Math.min(partitionCount, 32));
                         threads = configuredThreads > 0
                             ? Math.min(configuredThreads, balancedThreads)
                             : balancedThreads;
